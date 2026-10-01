@@ -603,6 +603,82 @@
 
 <script>
     /* ------------------------------------------------------------
+       CAMADA DE REDE (deixa o site mais ágil sem mexer nas telas)
+       - barra de progresso no topo enquanto algo carrega
+       - guarda 5 min as listas de apoio (produtos/condições/armazéns/diários)
+       - cancela a busca anterior quando você digita outra
+       - pré-carrega as listas de apoio logo ao abrir o site
+       ------------------------------------------------------------ */
+    (function () {
+        const nativeFetch = window.fetch.bind(window);
+        const TTL = 5 * 60 * 1000;
+        const CACHEABLE = new Set(['get_sale_form_data', 'get_payment_journals']);
+        const LATEST_ONLY = new Set(['get_products', 'get_stock', 'get_sales', 'get_financial_accounts', 'get_transfers', 'search_partners']);
+        const cache = new Map();
+        const inflight = new Map();
+        const controllers = new Map();
+        let pending = 0;
+
+        const bar = document.createElement('div');
+        bar.style.cssText = 'position:fixed;top:0;left:0;height:3px;width:0;background:#714B67;z-index:99999;opacity:0;transition:width .4s ease,opacity .25s ease;pointer-events:none;';
+        document.addEventListener('DOMContentLoaded', () => document.body.appendChild(bar));
+        const loadStart = () => { if (pending++ === 0) { bar.style.opacity = '1'; bar.style.width = '70%'; } };
+        const loadEnd = () => { if (--pending <= 0) { pending = 0; bar.style.width = '100%'; setTimeout(() => { if (!pending) { bar.style.opacity = '0'; bar.style.width = '0'; } }, 250); } };
+        const mk = ({ text, status }) => new Response(text, { status, headers: { 'Content-Type': 'application/json' } });
+
+        window.fetch = function (url, opts) {
+            if (url !== '/api/odoo' || !opts || typeof opts.body !== 'string') return nativeFetch(url, opts);
+            let action;
+            try { action = JSON.parse(opts.body).action; } catch (e) { return nativeFetch(url, opts); }
+
+            if (CACHEABLE.has(action)) {
+                const hit = cache.get(action);
+                if (hit && hit.exp > Date.now()) return Promise.resolve(mk(hit));
+                if (inflight.has(action)) return inflight.get(action).then(mk);
+                loadStart();
+                const p = nativeFetch(url, opts)
+                    .then(async r => {
+                        const text = await r.text();
+                        if (r.ok) cache.set(action, { exp: Date.now() + TTL, text, status: r.status });
+                        return { text, status: r.status };
+                    })
+                    .finally(() => { inflight.delete(action); loadEnd(); });
+                inflight.set(action, p);
+                return p.then(mk);
+            }
+
+            if (LATEST_ONLY.has(action)) {
+                if (controllers.has(action)) controllers.get(action).abort();
+                const ctrl = new AbortController();
+                controllers.set(action, ctrl);
+                loadStart();
+                return nativeFetch(url, { ...opts, signal: ctrl.signal })
+                    .catch(err => {
+                        // busca substituída por uma mais nova: a tela será atualizada pela busca nova
+                        if (err && err.name === 'AbortError') return new Promise(() => {});
+                        throw err;
+                    })
+                    .finally(() => { if (controllers.get(action) === ctrl) controllers.delete(action); loadEnd(); });
+            }
+
+            if (action === 'update_product') cache.clear();
+            loadStart();
+            return nativeFetch(url, opts).finally(loadEnd);
+        };
+
+        // Pré-carga: acorda o servidor e deixa as listas de apoio prontas (Nova Venda / Pagar abrem na hora)
+        window.addEventListener('load', () => {
+            setTimeout(() => {
+                const call = action => fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) }).catch(() => {});
+                call('get_payment_journals');
+                call('get_sale_form_data');
+            }, 300);
+        });
+    })();
+</script>
+
+<script>
+    /* ------------------------------------------------------------
        POP-UP PERSONALIZADO & SUBST. DO ALERT/CONFIRM NATIVO
        ------------------------------------------------------------ */
     let customModalResolve = null;
@@ -766,7 +842,7 @@
             }
 
             status.innerText = `${data.result.length} produto(s) encontrado(s):`;
-            results.innerHTML = "";
+            let html = "";
 
             data.result.forEach(prod => {
                 const category = Array.isArray(prod.categ_id) ? prod.categ_id[1] : "Geral";
@@ -776,7 +852,7 @@
                 const qtyClass = qty > 0 ? "stock-in" : "stock-out";
                 const safeName = (prod.name || '').replace(/'/g, "\\'");
 
-                results.innerHTML += `
+                html += `
                     <tr>
                         <td><strong>${prod.name || '-'}</strong></td>
                         <td><span class="category-badge">${category}</span></td>
@@ -789,6 +865,7 @@
                     </tr>
                 `;
             });
+            results.innerHTML = html;
         } catch (e) {
             status.innerText = "Erro ao carregar produtos.";
             results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
@@ -870,14 +947,14 @@
             }
 
             status.innerText = `${data.result.length} item(ns) em estoque encontrados:`;
-            results.innerHTML = "";
+            let html = "";
 
             data.result.forEach(item => {
                 const locationName = Array.isArray(item.location_id) ? item.location_id[1] : "-";
                 const productName = Array.isArray(item.product_id) ? item.product_id[1] : "-";
                 const qty = item.quantity ?? 0;
 
-                results.innerHTML += `
+                html += `
                     <tr>
                         <td>${locationName}</td>
                         <td><strong>${productName}</strong></td>
@@ -885,6 +962,7 @@
                     </tr>
                 `;
             });
+            results.innerHTML = html;
         } catch (e) {
             status.innerText = "Erro ao carregar estoque.";
             results.innerHTML = `<tr><td colspan="3" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
@@ -934,7 +1012,7 @@
             }
 
             status.innerText = `${data.result.length} pedido(s) encontrado(s):`;
-            results.innerHTML = "";
+            let html = "";
 
             data.result.forEach(sale => {
                 const clientName = Array.isArray(sale.partner_id) ? sale.partner_id[1] : "-";
@@ -944,7 +1022,7 @@
                 const statusMeta = getOrderStatusMeta(sale.state);
                 const paymentMeta = getPaymentSummaryMeta(sale.payment_summary);
 
-                results.innerHTML += `
+                html += `
                     <tr style="cursor: pointer;" onclick="abrirDetalhesVenda(${sale.id})">
                         <td><strong style="color: var(--primary-color); text-decoration: underline;">${orderNum}</strong></td>
                         <td>${clientName}</td>
@@ -963,6 +1041,7 @@
                     </tr>
                 `;
             });
+            results.innerHTML = html;
         } catch (e) {
             status.innerText = "Erro ao carregar pedidos.";
             results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
@@ -993,13 +1072,13 @@
             }
 
             status.innerText = `${data.result.length} conta(s) encontrada(s):`;
-            results.innerHTML = "";
+            let html = "";
 
             data.result.forEach(acc => {
                 const balance = acc.balance ?? 0;
                 const balanceClass = balance >= 0 ? 'color: var(--success-color);' : 'color: var(--danger-color);';
 
-                results.innerHTML += `
+                html += `
                     <tr>
                         <td><strong>${acc.code}</strong></td>
                         <td><strong>${acc.name}</strong></td>
@@ -1009,6 +1088,7 @@
                     </tr>
                 `;
             });
+            results.innerHTML = html;
         } catch (e) {
             status.innerText = "Erro ao carregar dados financeiro.";
             results.innerHTML = `<tr><td colspan="3" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
@@ -1437,22 +1517,20 @@
                 });
                 const data = await res.json();
                 
-                dropdown.innerHTML = '';
-                dropdown.innerHTML += `
+                let ddHtml = `
                     <div class="partner-dropdown-item partner-create-item" onclick="abrirModalCriarParceiro('${query.trim()}')">
                         + Criar e Editar "${query.trim()}"...
                     </div>
                 `;
 
-                if (data.partners && data.partners.length > 0) {
-                    data.partners.forEach(p => {
-                        dropdown.innerHTML += `
-                            <div class="partner-dropdown-item" onclick="selecionarParceiro(${p.id}, '${p.name.replace(/'/g, "\\'")}')">
-                                ${p.name}
-                            </div>
-                        `;
-                    });
-                }
+                (data.partners || []).forEach(p => {
+                    ddHtml += `
+                        <div class="partner-dropdown-item" onclick="selecionarParceiro(${p.id}, '${p.name.replace(/'/g, "\\'")}')">
+                            ${p.name}
+                        </div>
+                    `;
+                });
+                dropdown.innerHTML = ddHtml;
 
                 dropdown.style.display = 'block';
             } catch (e) {
@@ -1523,14 +1601,15 @@
 
     function renderLines(lines, editavel) {
         const tbody = document.getElementById('saleLinesBody');
-        tbody.innerHTML = "";
+
+        // lista de produtos montada UMA vez (antes era remontada em cada linha)
+        const baseOptions = availableProducts.map(p => `<option value="${p.id}">${p.display_name}</option>`).join('');
+        let html = "";
 
         lines.forEach(line => {
             const prodId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
             const prodName = Array.isArray(line.product_id) ? line.product_id[1] : '';
-            let options = availableProducts.map(p => 
-                `<option value="${p.id}" ${p.id === prodId ? 'selected' : ''}>${p.display_name}</option>`
-            ).join('');
+            let options = baseOptions.replace(`<option value="${prodId}">`, `<option value="${prodId}" selected>`);
 
             // garante que o produto já lançado na linha sempre apareça selecionado,
             // mesmo que ele não esteja (ou ainda não tenha carregado) na lista geral de produtos
@@ -1538,7 +1617,7 @@
                 options = `<option value="${prodId}" selected>${prodName}</option>` + options;
             }
 
-            tbody.innerHTML += `
+            html += `
                 <tr class="line-row" data-line-id="${line.id || ''}">
                     <td><select class="line-product" ${editavel ? '' : 'disabled'} onchange="aoSelecionarProduto(this)">${options}</select></td>
                     <td><input type="number" class="line-qty" value="${line.quantity || 1}" step="1" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
@@ -1548,6 +1627,7 @@
                 </tr>
             `;
         });
+        tbody.innerHTML = html;
         recalcularTotais();
     }
 
@@ -2070,14 +2150,14 @@
             }
 
             status.innerText = `${transfers.length} transferência(s) encontrada(s):`;
-            results.innerHTML = "";
+            let html = "";
 
             transfers.forEach(t => {
                 const de = Array.isArray(t.location_id) ? t.location_id[1] : '-';
                 const para = Array.isArray(t.location_dest_id) ? t.location_dest_id[1] : '-';
                 const meta = getTransferStatusMeta(t.state);
 
-                results.innerHTML += `
+                html += `
                     <tr style="cursor: pointer;" onclick="abrirDetalhesTransferencia(${t.id})">
                         <td><strong style="color: var(--primary-color); text-decoration: underline;">${t.name}</strong></td>
                         <td>${de}</td>
@@ -2086,6 +2166,7 @@
                     </tr>
                 `;
             });
+            results.innerHTML = html;
         } catch (e) {
             status.innerText = "Erro ao buscar transferências.";
         }
@@ -2168,15 +2249,14 @@
 
     function renderTransferLines(lines, editavel) {
         const tbody = document.getElementById('transferLinesBody');
-        tbody.innerHTML = "";
+        const baseOptions = availableTransferProducts.map(p => `<option value="${p.id}">${p.display_name}</option>`).join('');
+        let html = "";
 
         lines.forEach(line => {
             const prodId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
-            let options = availableTransferProducts.map(p =>
-                `<option value="${p.id}" ${p.id === prodId ? 'selected' : ''}>${p.display_name}</option>`
-            ).join('');
+            const options = baseOptions.replace(`<option value="${prodId}">`, `<option value="${prodId}" selected>`);
 
-            tbody.innerHTML += `
+            html += `
                 <tr class="line-row" data-line-id="${line.id || ''}">
                     <td><select class="line-product" ${editavel ? '' : 'disabled'} onchange="marcarAlteracaoTransferencia()">${options}</select></td>
                     <td><input type="number" class="line-qty" value="${line.product_uom_qty || 1}" step="1" ${editavel ? '' : 'readonly'} oninput="marcarAlteracaoTransferencia()"></td>
@@ -2184,6 +2264,7 @@
                 </tr>
             `;
         });
+        tbody.innerHTML = html;
     }
 
     function adicionarLinhaTransferencia() {
