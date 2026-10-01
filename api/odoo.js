@@ -1,3 +1,68 @@
+// =====================================================================
+// CONEXÃO COM O ODOO (nível de módulo: sobrevive entre requisições "quentes")
+// =====================================================================
+// As credenciais agora vêm das variáveis de ambiente da Vercel (ODOO_URL, ODOO_DB, ODOO_USER, ODOO_API_KEY).
+// Os valores antigos continuam como reserva para o site não parar, mas o ideal é removê-los daqui.
+const ODOO_URL = process.env.ODOO_URL || "https://deuris-candy-2.odoo.com/jsonrpc";
+const ODOO_DB = process.env.ODOO_DB || "deuris-candy-2";
+const ODOO_USER = process.env.ODOO_USER || "isaquemoises14@gmail.com";
+const ODOO_API_KEY = process.env.ODOO_API_KEY || "0757a6c247886172bff32acdceb0122735bb3278";
+
+let cachedUid = null;
+let uidPromise = null;
+let forcedAccountIdCache = null;
+
+async function rpc(service, method, args) {
+    const r = await fetch(ODOO_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", method: "call", params: { service, method, args }, id: Date.now() })
+    });
+    return r.json();
+}
+
+// Autentica UMA vez e reaproveita o uid (antes eram 2 chamadas ao Odoo a cada clique)
+function getUid() {
+    if (cachedUid) return Promise.resolve(cachedUid);
+    if (!uidPromise) {
+        uidPromise = rpc("common", "authenticate", [ODOO_DB, ODOO_USER, ODOO_API_KEY, {}])
+            .then(d => { if (d.result) cachedUid = d.result; return d.result; })
+            .finally(() => { uidPromise = null; });
+    }
+    return uidPromise;
+}
+
+const execute = (model, method, args, kwargs = {}) =>
+    rpc("object", "execute_kw", [ODOO_DB, cachedUid, ODOO_API_KEY, model, method, args, kwargs]).then(d => {
+        if (d.error) {
+            const errData = d.error.data || {};
+            const msg = errData.message || errData.debug || d.error.message || `Erro desconhecido do Odoo ao chamar ${model}.${method}`;
+            throw new Error(msg);
+        }
+        return d.result;
+    });
+
+// Cache em memória para listas que quase não mudam (condições de pagamento, armazéns, locais, produtos...)
+const _cache = new Map();
+function cached(key, ttlMs, fn) {
+    const hit = _cache.get(key);
+    if (hit && hit.exp > Date.now()) return hit.p;
+    const p = fn().catch(err => { _cache.delete(key); throw err; });
+    _cache.set(key, { p, exp: Date.now() + ttlMs });
+    return p;
+}
+const TTL_LONG = 10 * 60 * 1000;
+const TTL_PRODUCTS = 2 * 60 * 1000;
+const lookups = {
+    paymentTerms: () => cached("payment_terms", TTL_LONG, () => execute("account.payment.term", "search_read", [[]], { fields: ["id", "name"] })),
+    warehouses: () => cached("warehouses", TTL_LONG, () => execute("stock.warehouse", "search_read", [[]], { fields: ["id", "name", "code"] })),
+    saleProducts: () => cached("sale_products", TTL_PRODUCTS, () => execute("product.product", "search_read", [[["sale_ok", "=", true]]], { fields: ["id", "display_name", "list_price"] })),
+    locations: () => cached("locations", TTL_LONG, () => execute("stock.location", "search_read", [[["usage", "=", "internal"]]], { fields: ["id", "complete_name"], limit: 200 })),
+    transferProducts: () => cached("transfer_products", TTL_PRODUCTS, () => execute("product.product", "search_read", [[["type", "!=", "service"]]], { fields: ["id", "display_name", "uom_id"], limit: 200 })),
+    journals: () => cached("journals", TTL_LONG, () => execute("account.journal", "search_read", [[["type", "in", ["bank", "cash"]]]], { fields: ["id", "name", "type"] })),
+    internalPickingTypes: () => cached("picking_types_internal", TTL_LONG, () => execute("stock.picking.type", "search_read", [[["code", "=", "internal"]]], { fields: ["id", "name", "default_location_src_id", "default_location_dest_id"] }))
+};
+
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -11,67 +76,20 @@ export default async function handler(req, res) {
         return res.status(200).end();
     }
 
-    const ODOO_URL = "https://deuris-candy-2.odoo.com/jsonrpc";
-    const ODOO_DB = "deuris-candy-2";
-    const ODOO_USER = "isaquemoises14@gmail.com";
-    const ODOO_API_KEY = "0757a6c247886172bff32acdceb0122735bb3278";
-
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
     const action = body.action || "get_products";
 
     try {
-        const authRes = await fetch(ODOO_URL, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                jsonrpc: "2.0",
-                method: "call",
-                params: {
-                    service: "common",
-                    method: "authenticate",
-                    args: [ODOO_DB, ODOO_USER, ODOO_API_KEY, {}]
-                },
-                id: Date.now()
-            })
-        });
-
-        const authData = await authRes.json();
-        const uid = authData.result;
+        const uid = await getUid();
 
         if (!uid) {
             return res.status(401).json({ error: "Falha na autenticação com o Odoo." });
         }
 
-        const execute = (model, method, args, kwargs = {}) => {
-            return fetch(ODOO_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    jsonrpc: "2.0",
-                    method: "call",
-                    params: {
-                        service: "object",
-                        method: "execute_kw",
-                        args: [ODOO_DB, uid, ODOO_API_KEY, model, method, args, kwargs]
-                    },
-                    id: Date.now()
-                })
-            }).then(r => r.json()).then(d => {
-                if (d.error) {
-                    const errData = d.error.data || {};
-                    const msg = errData.message || errData.debug || d.error.message || `Erro desconhecido do Odoo ao chamar ${model}.${method}`;
-                    throw new Error(msg);
-                }
-                return d.result;
-            });
-        };
-
         // Encontra o tipo de operação de "Transferência Interna" correspondente ao local de origem
         // (mesma lógica que o próprio Odoo usa para preencher "Tipo de operação" automaticamente)
         const resolveInternalPickingType = async (locationId) => {
-            const types = await execute("stock.picking.type", "search_read", [[["code", "=", "internal"]]], {
-                fields: ["id", "name", "default_location_src_id", "default_location_dest_id"]
-            });
+            const types = await lookups.internalPickingTypes();
             if (!types || types.length === 0) return null;
             if (locationId) {
                 const match = types.find(t => Array.isArray(t.default_location_src_id) && t.default_location_src_id[0] === Number(locationId));
@@ -83,7 +101,6 @@ export default async function handler(req, res) {
         // Força todas as linhas de produto de uma fatura a usarem sempre a mesma conta contábil,
         // sem que isso precise aparecer/ser escolhido na tela do nosso site
         const FORCED_INVOICE_ACCOUNT_CODE = "3.01.01.01.01.04";
-        let forcedAccountIdCache = null;
         const resolveForcedAccountId = async () => {
             if (forcedAccountIdCache) return forcedAccountIdCache;
             const accs = await execute("account.account", "search_read", [[["code", "=", FORCED_INVOICE_ACCOUNT_CODE]]], { fields: ["id"] });
@@ -96,7 +113,7 @@ export default async function handler(req, res) {
         const applyForcedAccountToInvoice = async (invoiceId) => {
             const accountId = await resolveForcedAccountId();
             if (!accountId) return;
-            const lines = await execute("account.move.line", "search_read", [[["move_id", "=", invoiceId], ["display_type", "=", "product"]]], { fields: ["id"] });
+            const lines = await execute("account.move.line", "search_read", [[["move_id", "=", invoiceId], ["display_type", "=", "product"], ["account_id", "!=", accountId]]], { fields: ["id"] });
             const ids = (lines || []).map(l => l.id);
             if (ids.length > 0) {
                 await execute("account.move.line", "write", [ids, { account_id: accountId }]);
@@ -202,9 +219,7 @@ export default async function handler(req, res) {
 
         // AÇÃO: BUSCAR DIÁRIOS / CONTAS DE PAGAMENTO (BANCO/CAIXA)
         if (action === "get_payment_journals") {
-            const journals = await execute("account.journal", "search_read", [[["type", "in", ["bank", "cash"]]]], {
-                fields: ["id", "name", "type"]
-            });
+            const journals = await lookups.journals();
             return res.status(200).json({ result: journals || [] });
         }
 
@@ -261,28 +276,29 @@ export default async function handler(req, res) {
                 });
             }
 
-            const formattedAccounts = await Promise.all((accounts || []).map(async (acc) => {
-                let balance = acc.current_balance ?? 0;
+            // Uma única consulta agrupada traz o saldo de todas as contas de uma vez
+            const balanceById = {};
+            const accountIds = (accounts || []).map(a => a.id);
+            if (accountIds.length > 0) {
                 try {
-                    const lines = await execute("account.move.line", "read_group", [
-                        [["account_id", "=", acc.id], ["parent_state", "=", "posted"]]
+                    const groups = await execute("account.move.line", "read_group", [
+                        [["account_id", "in", accountIds], ["parent_state", "=", "posted"]]
                     ], {
                         groupby: ["account_id"],
                         fields: ["balance"]
                     });
-
-                    if (lines && lines.length > 0) {
-                        balance = lines[0].balance ?? balance;
-                    }
+                    (groups || []).forEach(g => {
+                        if (Array.isArray(g.account_id)) balanceById[g.account_id[0]] = g.balance;
+                    });
                 } catch (e) {}
+            }
 
-                return {
-                    id: acc.id,
-                    code: acc.code || "-",
-                    name: acc.name || "-",
-                    type: acc.account_type || "-",
-                    balance: balance
-                };
+            const formattedAccounts = (accounts || []).map(acc => ({
+                id: acc.id,
+                code: acc.code || "-",
+                name: acc.name || "-",
+                type: acc.account_type || "-",
+                balance: balanceById[acc.id] ?? acc.current_balance ?? 0
             }));
 
             return res.status(200).json({ result: formattedAccounts });
@@ -291,18 +307,16 @@ export default async function handler(req, res) {
         // AÇÃO: DADOS DE APOIO PARA MONTAR UM NOVO PEDIDO DE VENDA (CONDIÇÕES DE PAGAMENTO, PRODUTOS, ARMAZÉNS)
         if (action === "get_sale_form_data") {
             const [paymentTerms, products, warehouses] = await Promise.all([
-                execute("account.payment.term", "search_read", [[]], { fields: ["id", "name"] }).catch(() => []),
-                execute("product.product", "search_read", [[["sale_ok", "=", true]]], { fields: ["id", "display_name", "list_price"] }).catch(() => []),
-                execute("stock.warehouse", "search_read", [[]], { fields: ["id", "name", "code"] }).catch(() => [])
+                lookups.paymentTerms().catch(() => []),
+                lookups.saleProducts().catch(() => []),
+                lookups.warehouses().catch(() => [])
             ]);
             return res.status(200).json({ payment_terms: paymentTerms || [], products: products || [], warehouses: warehouses || [] });
         }
 
         // AÇÃO: BUSCAR ARMAZÉNS (LOCAIS DE ESTOQUE PARA VENDA)
         if (action === "get_warehouses") {
-            const warehouses = await execute("stock.warehouse", "search_read", [[]], {
-                fields: ["id", "name", "code"]
-            });
+            const warehouses = await lookups.warehouses();
             return res.status(200).json({ result: warehouses || [] });
         }
 
@@ -317,6 +331,8 @@ export default async function handler(req, res) {
             if (standard_price !== undefined) writeData.standard_price = Number(standard_price);
 
             await execute("product.template", "write", [[Number(product_id)], writeData]);
+            _cache.delete("sale_products");
+            _cache.delete("transfer_products");
             return res.status(200).json({ success: true });
         }
 
@@ -377,28 +393,22 @@ export default async function handler(req, res) {
                 }]);
                 orderId = await execute("sale.order", "create", [headerData]);
             } else {
-                await execute("sale.order", "write", [[orderId], headerData]);
-
+                // Uma única escrita no pedido (remove + atualiza + cria linhas), como o próprio Odoo faz
+                const lineCommands = [];
                 for (const rid of (removed_line_ids || [])) {
-                    await execute("sale.order.line", "unlink", [[Number(rid)]]).catch(() => {});
+                    lineCommands.push([2, Number(rid), 0]);
                 }
-
                 for (const l of validLines) {
-                    if (l.id) {
-                        await execute("sale.order.line", "write", [[Number(l.id)], {
-                            product_id: Number(l.product_id),
-                            product_uom_qty: Number(l.qty),
-                            price_unit: Number(l.price)
-                        }]);
-                    } else {
-                        await execute("sale.order.line", "create", [{
-                            order_id: orderId,
-                            product_id: Number(l.product_id),
-                            product_uom_qty: Number(l.qty),
-                            price_unit: Number(l.price)
-                        }]);
-                    }
+                    const lineVals = {
+                        product_id: Number(l.product_id),
+                        product_uom_qty: Number(l.qty),
+                        price_unit: Number(l.price)
+                    };
+                    lineCommands.push(l.id ? [1, Number(l.id), lineVals] : [0, 0, lineVals]);
                 }
+                if (lineCommands.length > 0) headerData.order_line = lineCommands;
+
+                await execute("sale.order", "write", [[orderId], headerData]);
             }
 
             let warnings = [];
@@ -477,15 +487,16 @@ export default async function handler(req, res) {
             const { invoice_id } = body;
             if (!invoice_id) return res.status(400).json({ error: "ID da fatura é obrigatório." });
 
-            const invoices = await execute("account.move", "search_read", [[["id", "=", Number(invoice_id)]]], {
-                fields: ["id", "name", "partner_id", "invoice_payment_term_id", "invoice_date", "state", "payment_state", "amount_total", "invoice_line_ids"]
-            });
+            const [invoices, lines] = await Promise.all([
+                execute("account.move", "search_read", [[["id", "=", Number(invoice_id)]]], {
+                    fields: ["id", "name", "partner_id", "invoice_payment_term_id", "invoice_date", "state", "payment_state", "amount_total", "invoice_line_ids"]
+                }),
+                execute("account.move.line", "search_read", [[["move_id", "=", Number(invoice_id)], ["display_type", "=", "product"]]], {
+                    fields: ["id", "product_id", "quantity", "discount", "price_unit", "price_subtotal", "price_total"]
+                }).catch(() => [])
+            ]);
             if (!invoices || invoices.length === 0) return res.status(404).json({ error: "Fatura não encontrada." });
             const invoice = invoices[0];
-
-            const lines = await execute("account.move.line", "search_read", [[["id", "in", invoice.invoice_line_ids], ["display_type", "=", "product"]]], {
-                fields: ["id", "product_id", "quantity", "discount", "price_unit", "price_subtotal", "price_total"]
-            }).catch(() => []);
 
             return res.status(200).json({ invoice, lines: lines || [] });
         }
@@ -495,13 +506,12 @@ export default async function handler(req, res) {
             const { invoice_id, invoice_date, lines } = body;
             if (!invoice_id) return res.status(400).json({ error: "ID da fatura é obrigatório." });
 
-            if (invoice_date) {
-                await execute("account.move", "write", [[Number(invoice_id)], { invoice_date }]);
-            }
-
-            for (const l of (lines || [])) {
-                if (!l.id) continue;
-                await execute("account.move.line", "write", [[Number(l.id)], { discount: Number(l.discount) || 0 }]);
+            const moveVals = {};
+            if (invoice_date) moveVals.invoice_date = invoice_date;
+            const discountCommands = (lines || []).filter(l => l.id).map(l => [1, Number(l.id), { discount: Number(l.discount) || 0 }]);
+            if (discountCommands.length > 0) moveVals.invoice_line_ids = discountCommands;
+            if (Object.keys(moveVals).length > 0) {
+                await execute("account.move", "write", [[Number(invoice_id)], moveVals]);
             }
 
             await applyForcedAccountToInvoice(Number(invoice_id));
@@ -604,37 +614,34 @@ export default async function handler(req, res) {
         // AÇÃO: DETALHES DE UM PEDIDO DE VENDA
         if (action === "get_sale_detail") {
             const { order_id } = body;
-            const orders = await execute("sale.order", "search_read", [[["id", "=", order_id]]], {
-                fields: ["id", "name", "partner_id", "payment_term_id", "order_line", "state", "amount_total", "warehouse_id", "invoice_ids", "invoice_status"]
-            });
+            const oid = Number(order_id);
+
+            // Tudo que não depende do resultado do pedido já sai em paralelo.
+            // Listas de apoio vêm do cache; a lista de parceiros foi removida (o site não a usa aqui).
+            const [orders, lines, paymentTerms, products, warehouses] = await Promise.all([
+                execute("sale.order", "search_read", [[["id", "=", oid]]], {
+                    fields: ["id", "name", "partner_id", "payment_term_id", "order_line", "state", "amount_total", "warehouse_id", "invoice_ids", "invoice_status"]
+                }),
+                execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], {
+                    fields: ["id", "product_id", "product_uom_qty", "price_unit", "price_subtotal"]
+                }).catch(() => []),
+                lookups.paymentTerms().catch(() => []),
+                lookups.saleProducts().catch(() => []),
+                lookups.warehouses().catch(() => [])
+            ]);
             if (!orders || orders.length === 0) return res.status(404).json({ error: "Pedido de venda não encontrado." });
 
             const order = orders[0];
+            const invoices = (order.invoice_ids && order.invoice_ids.length > 0)
+                ? await execute("account.move", "search_read", [[["id", "in", order.invoice_ids]]], { fields: ["id", "name", "state", "payment_state", "amount_total"] }).catch(() => [])
+                : [];
 
-            // Cada consulta auxiliar roda isolada: se uma falhar (instabilidade pontual do Odoo),
-            // não derruba a tela inteira - apenas volta vazia nesse campo específico.
-            const [lines, partners, paymentTerms, products, warehouses, invoices] = await Promise.all([
-                execute("sale.order.line", "search_read", [[["id", "in", order.order_line], ["display_type", "=", false]]], {
-                    fields: ["id", "product_id", "product_uom_qty", "price_unit", "price_subtotal"]
-                }).catch(() => []),
-                execute("res.partner", "search_read", [[]], { fields: ["id", "name"], limit: 100 }).catch(() => []),
-                execute("account.payment.term", "search_read", [[]], { fields: ["id", "name"] }).catch(() => []),
-                execute("product.product", "search_read", [[["sale_ok", "=", true]]], { fields: ["id", "display_name", "list_price"] }).catch(() => []),
-                execute("stock.warehouse", "search_read", [[]], { fields: ["id", "name"] }).catch(() => []),
-                (order.invoice_ids && order.invoice_ids.length > 0)
-                    ? execute("account.move", "search_read", [[["id", "in", order.invoice_ids]]], { fields: ["id", "name", "state", "payment_state", "amount_total"] }).catch(() => [])
-                    : Promise.resolve([])
-            ]);
-
-            return res.status(200).json({ order, lines: lines || [], partners: partners || [], payment_terms: paymentTerms || [], products: products || [], warehouses: warehouses || [], invoices: invoices || [] });
+            return res.status(200).json({ order, lines: lines || [], payment_terms: paymentTerms || [], products: products || [], warehouses: warehouses || [], invoices: invoices || [] });
         }
 
         // AÇÃO: BUSCAR LOCAIS DE ESTOQUE INTERNOS (PARA TRANSFERÊNCIAS)
         if (action === "get_locations") {
-            const locations = await execute("stock.location", "search_read", [[["usage", "=", "internal"]]], {
-                fields: ["id", "complete_name"],
-                limit: 200
-            });
+            const locations = await lookups.locations();
             return res.status(200).json({ result: locations || [] });
         }
 
@@ -655,24 +662,19 @@ export default async function handler(req, res) {
         // AÇÃO: DETALHES DE UMA TRANSFERÊNCIA
         if (action === "get_transfer_detail") {
             const { order_id } = body;
-            const pickings = await execute("stock.picking", "search_read", [[["id", "=", order_id]]], {
-                fields: ["id", "name", "location_id", "location_dest_id", "state", "picking_type_id"]
-            });
+            const [pickings, moves, locations, products] = await Promise.all([
+                execute("stock.picking", "search_read", [[["id", "=", order_id]]], {
+                    fields: ["id", "name", "location_id", "location_dest_id", "state", "picking_type_id"]
+                }),
+                execute("stock.move", "search_read", [[["picking_id", "=", order_id]]], {
+                    fields: ["id", "product_id", "product_uom_qty"]
+                }),
+                lookups.locations(),
+                lookups.transferProducts()
+            ]);
             if (!pickings || pickings.length === 0) return res.status(404).json({ error: "Transferência não encontrada." });
 
             const picking = pickings[0];
-            const moves = await execute("stock.move", "search_read", [[["picking_id", "=", order_id]]], {
-                fields: ["id", "product_id", "product_uom_qty"]
-            });
-            const locations = await execute("stock.location", "search_read", [[["usage", "=", "internal"]]], {
-                fields: ["id", "complete_name"],
-                limit: 200
-            });
-            const products = await execute("product.product", "search_read", [[["type", "!=", "service"]]], {
-                fields: ["id", "display_name", "uom_id"],
-                limit: 200
-            });
-
             return res.status(200).json({ order: picking, lines: moves || [], locations: locations || [], products: products || [] });
         }
 
@@ -714,35 +716,32 @@ export default async function handler(req, res) {
                 if (matchedType) writeData.picking_type_id = matchedType.id;
             }
 
-            if (Object.keys(writeData).length > 0) {
-                await execute("stock.picking", "write", [[Number(order_id)], writeData]);
+            const moveLocUpdate = {};
+            if (writeData.location_id) moveLocUpdate.location_id = writeData.location_id;
+            if (writeData.location_dest_id) moveLocUpdate.location_dest_id = writeData.location_dest_id;
 
-                const moveLocUpdate = {};
-                if (writeData.location_id) moveLocUpdate.location_id = writeData.location_id;
-                if (writeData.location_dest_id) moveLocUpdate.location_dest_id = writeData.location_dest_id;
-
-                const existingMoveIds = (lines || []).filter(l => l.id).map(l => Number(l.id));
-                if (Object.keys(moveLocUpdate).length > 0 && existingMoveIds.length > 0) {
-                    await execute("stock.move", "write", [existingMoveIds, moveLocUpdate]);
-                }
+            // Itens: atualizar/criar tudo na mesma escrita do picking (unidade de medida vem do cache de produtos)
+            let productCatalog = [];
+            if ((lines || []).some(l => !l.id && l.product_id)) {
+                productCatalog = await lookups.transferProducts().catch(() => []);
             }
-
+            const moveCommands = [];
             for (const l of (lines || [])) {
+                if (l.id && !l.product_id) {
+                    if (Object.keys(moveLocUpdate).length > 0) moveCommands.push([1, Number(l.id), { ...moveLocUpdate }]);
+                    continue;
+                }
                 if (!l.product_id) continue;
 
                 if (l.id) {
-                    await execute("stock.move", "write", [[Number(l.id)], {
+                    moveCommands.push([1, Number(l.id), {
                         product_id: Number(l.product_id),
-                        product_uom_qty: Number(l.qty)
+                        product_uom_qty: Number(l.qty),
+                        ...moveLocUpdate
                     }]);
                 } else {
-                    const productInfo = await execute("product.product", "read", [[Number(l.product_id)]], {
-                        fields: ["display_name", "uom_id"]
-                    });
-                    const prod = (productInfo && productInfo[0]) || {};
-
-                    await execute("stock.move", "create", [{
-                        picking_id: Number(order_id),
+                    const prod = productCatalog.find(p => p.id === Number(l.product_id)) || {};
+                    moveCommands.push([0, 0, {
                         product_id: Number(l.product_id),
                         product_uom_qty: Number(l.qty),
                         name: prod.display_name || "Transferência Interna",
@@ -751,6 +750,11 @@ export default async function handler(req, res) {
                         location_dest_id: writeData.location_dest_id || (location_dest_id ? Number(location_dest_id) : undefined)
                     }]);
                 }
+            }
+            if (moveCommands.length > 0) writeData.move_ids = moveCommands;
+
+            if (Object.keys(writeData).length > 0) {
+                await execute("stock.picking", "write", [[Number(order_id)], writeData]);
             }
 
             if (validate) {
@@ -762,14 +766,14 @@ export default async function handler(req, res) {
 
         // AÇÃO PADRÃO: PRODUTOS
         const query = body.query || "";
-        const domain = query ? [["name", "ilike", query]] : [];
+        const domain = [["type", "!=", "service"]];
+        if (query) domain.push(["name", "ilike", query]);
         const result = await execute("product.template", "search_read", [domain], {
             fields: ["id", "name", "list_price", "standard_price", "qty_available", "type", "categ_id"],
             limit: 100
         });
 
-        const produtosFiltrados = (result || []).filter(prod => prod.type !== "service");
-        return res.status(200).json({ result: produtosFiltrados });
+        return res.status(200).json({ result: result || [] });
 
     } catch (error) {
         return res.status(500).json({ error: error.message });
