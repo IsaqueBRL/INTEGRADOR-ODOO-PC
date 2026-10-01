@@ -120,7 +120,25 @@ export default async function handler(req, res) {
             }
         };
 
-        // Quando _create_invoices() não gera nenhuma fatura (sem lançar erro), busca o motivo
+        // Gera a fatura (rascunho) usando o assistente "Criar fatura" do Odoo.
+        // Métodos privados (que começam com "_", como sale.order._create_invoices) são bloqueados
+        // pelo Odoo via API externa; o assistente usa só métodos públicos e faz o mesmo trabalho.
+        const criarFaturasDoPedido = async (orderId) => {
+            const oid = Number(orderId);
+            const ctx = { active_model: "sale.order", active_id: oid, active_ids: [oid] };
+
+            const antes = await execute("sale.order", "read", [[oid]], { fields: ["invoice_ids"] });
+            const idsAntes = (antes && antes[0] && antes[0].invoice_ids) || [];
+
+            const wizardId = await execute("sale.advance.payment.inv", "create", [{ advance_payment_method: "delivered" }], { context: ctx });
+            await execute("sale.advance.payment.inv", "create_invoices", [[wizardId]], { context: ctx });
+
+            const depois = await execute("sale.order", "read", [[oid]], { fields: ["invoice_ids"] });
+            const idsDepois = (depois && depois[0] && depois[0].invoice_ids) || [];
+            return idsDepois.filter(id => !idsAntes.includes(id));
+        };
+
+        // Quando a geração da fatura não gera nenhuma fatura (sem lançar erro), busca o motivo
         // olhando quanto já foi pedido/entregue/faturado em cada linha, para explicar na mensagem
         const diagnosticarPedidoSemFatura = async (orderId) => {
             try {
@@ -449,7 +467,7 @@ export default async function handler(req, res) {
                 // Gera a fatura em rascunho (equivalente a escolher "Fatura normal" e "Criar Rascunho" no Odoo).
                 // A fatura NÃO é lançada automaticamente - isso é feito depois, na tela de revisão da fatura.
                 try {
-                    const invoiceIds = await execute("sale.order", "_create_invoices", [[orderId]]);
+                    const invoiceIds = await criarFaturasDoPedido(orderId);
                     if (invoiceIds && invoiceIds.length > 0) {
                         invoiceId = invoiceIds[0];
                         await applyForcedAccountToInvoice(invoiceId);
@@ -470,7 +488,7 @@ export default async function handler(req, res) {
             if (!order_id) return res.status(400).json({ error: "ID do pedido é obrigatório." });
 
             try {
-                const invoiceIds = await execute("sale.order", "_create_invoices", [[Number(order_id)]]);
+                const invoiceIds = await criarFaturasDoPedido(order_id);
                 if (!invoiceIds || invoiceIds.length === 0) {
                     const diag = await diagnosticarPedidoSemFatura(order_id);
                     return res.status(400).json({ error: "Não foi possível gerar a fatura para este pedido." + diag });
@@ -478,7 +496,8 @@ export default async function handler(req, res) {
                 await applyForcedAccountToInvoice(invoiceIds[0]);
                 return res.status(200).json({ success: true, invoice_id: invoiceIds[0] });
             } catch (e) {
-                return res.status(500).json({ error: "Erro ao gerar a fatura: " + e.message });
+                const diag = await diagnosticarPedidoSemFatura(order_id);
+                return res.status(500).json({ error: "Erro ao gerar a fatura: " + e.message + diag });
             }
         }
 
