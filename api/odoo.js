@@ -348,7 +348,8 @@ export default async function handler(req, res) {
             const whs = await execute("stock.warehouse", "read", [[whId]], { fields: ["view_location_id", "lot_stock_id"] });
             const wh = whs && whs[0];
             if (!wh) return res.status(404).json({ error: "Armazém não encontrado." });
-            const rootLoc = Array.isArray(wh.view_location_id) ? wh.view_location_id[0] : wh.lot_stock_id[0];
+            // usa o local de estoque do armazém (ex.: "CASA/Stock") e sublocais, o mesmo que aparece em Relatórios > Detailed Stock
+            const rootLoc = Array.isArray(wh.lot_stock_id) ? wh.lot_stock_id[0] : wh.view_location_id[0];
 
             // estoque físico do armazém (locais internos dele e sublocais), somado por produto
             const quants = await execute("stock.quant", "search_read", [[
@@ -365,13 +366,15 @@ export default async function handler(req, res) {
             const ids = Object.keys(qtyByProduct).map(Number);
             if (ids.length === 0) return res.status(200).json({ products: [] });
 
+            // OBS: não usar order "display_name" aqui — é um campo calculado (não armazenado) e o Odoo rejeita a ordenação.
+            // A ordem alfabética é feita aqui no servidor.
             const products = await execute("product.product", "search_read", [[["id", "in", ids], ["sale_ok", "=", true]]], {
-                fields: ["id", "display_name", "list_price"],
-                order: "display_name asc"
+                fields: ["id", "display_name", "list_price"]
             });
-            return res.status(200).json({
-                products: (products || []).map(pr => ({ ...pr, stock_qty: qtyByProduct[pr.id] }))
-            });
+            const list = (products || [])
+                .map(pr => ({ ...pr, stock_qty: qtyByProduct[pr.id] }))
+                .sort((a, b) => (a.display_name || "").localeCompare(b.display_name || "", "pt-BR"));
+            return res.status(200).json({ products: list });
         }
 
         // AÇÃO: ATUALIZAR PRODUTO
