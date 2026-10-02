@@ -325,6 +325,15 @@
 
         <div class="search-box">
             <input type="text" id="searchVendasInput" placeholder="Digite o número do pedido ou cliente..." oninput="debounceSearch('vendas')">
+            <select id="vendasWarehouseFilter" onchange="buscarVendas()" title="Filtrar por local/armazém" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:200px;cursor:pointer;">
+                <option value="">Todos os locais</option>
+            </select>
+            <select id="vendasStatusFilter" onchange="buscarVendas()" title="Filtrar por status" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:200px;cursor:pointer;">
+                <option value="">Todos os status</option>
+                <option value="draft">Orçamento</option>
+                <option value="sale">Confirmado</option>
+                <option value="cancel">Cancelado</option>
+            </select>
             <button onclick="buscarVendas()">Pesquisar</button>
         </div>
 
@@ -1093,18 +1102,41 @@
         }
     }
 
+    let vendasWarehousesCarregados = false;
+    async function carregarFiltroArmazensVendas() {
+        if (vendasWarehousesCarregados) return;
+        const select = document.getElementById("vendasWarehouseFilter");
+        try {
+            const response = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: "get_warehouses" })
+            });
+            const data = await response.json();
+            if (!data.result) return;
+            const atual = select.value;
+            select.innerHTML = '<option value="">Todos os locais</option>' +
+                data.result.map(w => `<option value="${w.id}">${w.name}</option>`).join('');
+            select.value = atual;
+            vendasWarehousesCarregados = true;
+        } catch (e) { /* tenta de novo na próxima pesquisa */ }
+    }
+
     async function buscarVendas() {
         const query = document.getElementById("searchVendasInput").value.trim();
         const status = document.getElementById("statusVendas");
         const results = document.getElementById("resultsVendas");
+        const warehouse_id = document.getElementById("vendasWarehouseFilter").value;
+        const order_status = document.getElementById("vendasStatusFilter").value;
 
         status.innerText = "Pesquisando pedidos...";
+        carregarFiltroArmazensVendas();
 
         try {
             const response = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: "get_sales", query })
+                body: JSON.stringify({ action: "get_sales", query, warehouse_id, order_status })
             });
 
             const data = await response.json();
@@ -1192,6 +1224,17 @@
                     </tr>
                 `;
             });
+            const totalCents = data.result.reduce((sum, acc) => sum + Math.round((acc.balance ?? 0) * 100), 0);
+            const total = totalCents / 100;
+            const totalColor = total >= 0 ? 'var(--success-color)' : 'var(--danger-color)';
+            html += `
+                <tr style="background: #f4eef2; border-top: 2px solid var(--primary-color);">
+                    <td colspan="2" style="text-align: right; font-weight: bold;">TOTAL</td>
+                    <td style="text-align: right; font-weight: bold; color: ${totalColor};">
+                        R$ ${total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                </tr>
+            `;
             results.innerHTML = html;
         } catch (e) {
             status.innerText = "Erro ao carregar dados financeiro.";
