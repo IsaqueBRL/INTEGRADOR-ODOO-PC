@@ -209,7 +209,7 @@
         <h3>Selecione uma opção:</h3>
         <div class="menu-buttons">
             <button class="btn-menu" onclick="mostrarTela('produtosSection'); carregarCategoriasProdutos(); buscarProdutos();">PRODUTOS</button>
-            <button class="btn-menu" onclick="mostrarTela('estoqueSection'); buscarEstoque();">ESTOQUE</button>
+            <button class="btn-menu" onclick="mostrarTela('estoqueSection'); carregarLocaisEstoque(); buscarEstoque();">ESTOQUE</button>
             <button class="btn-menu" onclick="mostrarTela('vendasSection'); buscarVendas();">VENDAS</button>
             <button class="btn-menu" onclick="mostrarTela('financeiroSection'); buscarFinanceiro();">FINANCEIRO</button>
             <button class="btn-menu" onclick="mostrarTela('transferenciasSection'); buscarTransferencias();">TRANSFERÊNCIAS</button>
@@ -259,6 +259,9 @@
 
         <div class="search-box">
             <input type="text" id="searchEstoqueInput" placeholder="Digite o nome do produto..." oninput="debounceSearch('estoque')">
+            <select id="locationFilter" onchange="buscarEstoque()" title="Filtrar por local" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:220px;cursor:pointer;">
+                <option value="">Todos os locais</option>
+            </select>
             <button onclick="buscarEstoque()">Pesquisar</button>
         </div>
 
@@ -615,7 +618,7 @@
     (function () {
         const nativeFetch = window.fetch.bind(window);
         const TTL = 5 * 60 * 1000;
-        const CACHEABLE = new Set(['get_sale_form_data', 'get_payment_journals', 'get_product_categories']);
+        const CACHEABLE = new Set(['get_sale_form_data', 'get_payment_journals', 'get_product_categories', 'get_locations']);
         const LATEST_ONLY = new Set(['get_products', 'get_stock', 'get_sales', 'get_financial_accounts', 'get_transfers', 'search_partners']);
         const cache = new Map();
         const inflight = new Map();
@@ -947,8 +950,28 @@
     }
 
     /* 2. BUSCAR ESTOQUE */
+    /* FILTRO DE LOCAIS (somente locais internos) */
+    async function carregarLocaisEstoque() {
+        const select = document.getElementById("locationFilter");
+        try {
+            const response = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: "get_locations" })
+            });
+            const data = await response.json();
+            if (!data.result) return;
+
+            const atual = select.value;
+            select.innerHTML = '<option value="">Todos os locais</option>' +
+                data.result.map(l => `<option value="${l.id}">${l.complete_name}</option>`).join('');
+            if (atual && data.result.some(l => String(l.id) === atual)) select.value = atual;
+        } catch (e) { /* o filtro fica só com "Todos os locais" */ }
+    }
+
     async function buscarEstoque() {
         const query = document.getElementById("searchEstoqueInput").value.trim();
+        const location_id = document.getElementById("locationFilter").value;
         const status = document.getElementById("statusEstoque");
         const results = document.getElementById("resultsEstoque");
 
@@ -958,7 +981,7 @@
             const response = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: "get_stock", query })
+                body: JSON.stringify({ action: "get_stock", query, location_id: location_id || null })
             });
 
             const data = await response.json();
