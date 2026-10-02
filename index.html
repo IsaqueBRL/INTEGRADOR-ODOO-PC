@@ -809,11 +809,20 @@
                 body: JSON.stringify({ action: 'get_warehouse_products', warehouse_id: Number(wh) })
             });
             const data = await res.json();
-            if (!data.products) return false;
+            if (!data.products) {
+                // não cai mais na lista geral: avisa o erro e deixa a lista vazia
+                availableProducts = [];
+                console.error('get_warehouse_products:', data.error || data);
+                alert('Não foi possível carregar os produtos deste local: ' + (data.error || 'resposta inválida do servidor'));
+                return false;
+            }
             availableProducts = data.products;
             return true;
         } catch (e) {
-            return false; // mantém a lista que já estava carregada
+            availableProducts = [];
+            console.error('get_warehouse_products:', e);
+            alert('Não foi possível carregar os produtos deste local: ' + (e.message || 'erro de conexão'));
+            return false;
         }
     }
 
