@@ -382,13 +382,14 @@ export default async function handler(req, res) {
 
         // AÇÃO: ATUALIZAR PRODUTO
         if (action === "update_product") {
-            const { product_id, name, list_price, standard_price } = body;
+            const { product_id, name, list_price, standard_price, categ_id } = body;
             if (!product_id) return res.status(400).json({ error: "ID do produto é obrigatório." });
 
             const writeData = {};
             if (name) writeData.name = name;
             if (list_price !== undefined) writeData.list_price = Number(list_price);
             if (standard_price !== undefined) writeData.standard_price = Number(standard_price);
+            if (categ_id) writeData.categ_id = Number(categ_id);
 
             await execute("product.template", "write", [[Number(product_id)], writeData]);
             _cache.delete("sale_products");
@@ -864,6 +865,17 @@ export default async function handler(req, res) {
         }
 
         // AÇÃO: CATEGORIAS DA TELA DE PRODUTOS (só as que têm produtos "Mercadorias" + "Vendas")
+        // AÇÃO: TODAS AS CATEGORIAS DE PRODUTO (para trocar a categoria no pop-up de edição)
+        if (action === "get_all_product_categories") {
+            const allCats = await cached("all_product_categories", TTL_LONG, () =>
+                execute("product.category", "search_read", [[]], { fields: ["id", "complete_name"], limit: 500 })
+            );
+            const list = (allCats || [])
+                .map(c => ({ id: c.id, name: c.complete_name }))
+                .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+            return res.status(200).json({ result: list });
+        }
+
         if (action === "get_product_categories") {
             const cats = await cached("product_categories", TTL_PRODUCTS, async () => {
                 try {
