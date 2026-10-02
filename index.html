@@ -476,7 +476,7 @@
             </div>
             <div style="flex: 1; min-width: 200px;">
                 <label>Local de Estoque (Armazém) *</label>
-                <select id="saleWarehouse"></select>
+                <select id="saleWarehouse" onchange="aoTrocarArmazem()"></select>
             </div>
         </div>
 
@@ -619,7 +619,7 @@
         const nativeFetch = window.fetch.bind(window);
         const TTL = 5 * 60 * 1000;
         const CACHEABLE = new Set(['get_sale_form_data', 'get_payment_journals', 'get_product_categories', 'get_locations']);
-        const LATEST_ONLY = new Set(['get_products', 'get_stock', 'get_sales', 'get_financial_accounts', 'get_transfers', 'search_partners']);
+        const LATEST_ONLY = new Set(['get_products', 'get_stock', 'get_sales', 'get_financial_accounts', 'get_transfers', 'search_partners', 'get_warehouse_products']);
         const cache = new Map();
         const inflight = new Map();
         const controllers = new Map();
@@ -791,6 +791,55 @@
     let currentInvoiceId = null;
     let currentOrderTotal = 0;
     let availableProducts = [];
+
+    // Texto da opção de produto (mostra o saldo quando o produto veio filtrado por armazém)
+    function labelProduto(p) {
+        const q = p.stock_qty;
+        return (q === undefined || q === null) ? p.display_name : `${p.display_name} (${Number(q)} un)`;
+    }
+
+    // Traz só os produtos que têm estoque no armazém escolhido
+    async function carregarProdutosDoArmazem() {
+        const wh = document.getElementById('saleWarehouse').value;
+        if (!wh) return false;
+        try {
+            const res = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'get_warehouse_products', warehouse_id: Number(wh) })
+            });
+            const data = await res.json();
+            if (!data.products) return false;
+            availableProducts = data.products;
+            return true;
+        } catch (e) {
+            return false; // mantém a lista que já estava carregada
+        }
+    }
+
+    // Ao trocar o armazém: recarrega os produtos e atualiza as linhas já adicionadas
+    async function aoTrocarArmazem() {
+        if (!isCurrentInvoiceEditable) return;
+        const ok = await carregarProdutosDoArmazem();
+        if (!ok) return;
+
+        let semEstoque = 0;
+        document.querySelectorAll('#saleLinesBody .line-product').forEach(sel => {
+            const cur = sel.value;
+            const curText = (sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : '').replace(/ ⚠.*$/, '');
+            let opts = '<option value="">Selecione um produto...</option>' +
+                availableProducts.map(p => `<option value="${p.id}">${labelProduto(p)}</option>`).join('');
+            if (cur && !availableProducts.some(p => String(p.id) === cur)) {
+                opts += `<option value="${cur}">${curText} ⚠ sem estoque neste local</option>`;
+                semEstoque++;
+            }
+            sel.innerHTML = opts;
+            sel.value = cur;
+        });
+        if (semEstoque > 0) {
+            alert('Atenção: ' + semEstoque + ' produto(s) do pedido não têm estoque neste local (marcados com ⚠).');
+        }
+    }
     let availableWarehouses = [];
     let isCurrentInvoiceEditable = false;
     let linesToRemove = [];
@@ -1181,6 +1230,7 @@
                 selectWh.innerHTML += `<option value="${w.id}" ${idx === 0 ? 'selected' : ''}>${w.name}</option>`;
             });
             selectWh.disabled = false;
+            await carregarProdutosDoArmazem();
         } catch (e) {
             // segue mesmo se a pré-carga falhar; os campos podem ser preenchidos/recarregados na hora de salvar
         }
@@ -1258,6 +1308,8 @@
             selectTerm.disabled = !isCurrentInvoiceEditable;
             selectWh.disabled = !isCurrentInvoiceEditable;
             document.getElementById('btnAddLine').style.display = isCurrentInvoiceEditable ? 'inline-block' : 'none';
+
+            if (isCurrentInvoiceEditable) await carregarProdutosDoArmazem();
 
             renderLines(data.lines || [], isCurrentInvoiceEditable);
             atualizarBotoesAcao(order, invoice);
@@ -1649,7 +1701,7 @@
         const tbody = document.getElementById('saleLinesBody');
 
         // lista de produtos montada UMA vez (antes era remontada em cada linha)
-        const baseOptions = availableProducts.map(p => `<option value="${p.id}">${p.display_name}</option>`).join('');
+        const baseOptions = availableProducts.map(p => `<option value="${p.id}">${labelProduto(p)}</option>`).join('');
         let html = "";
 
         lines.forEach(line => {
@@ -1689,7 +1741,7 @@
         }
         
         let options = `<option value="">Selecione um produto...</option>` + availableProducts.map(p => 
-            `<option value="${p.id}">${p.display_name}</option>`
+            `<option value="${p.id}">${labelProduto(p)}</option>`
         ).join('');
 
         const tr = document.createElement('tr');
