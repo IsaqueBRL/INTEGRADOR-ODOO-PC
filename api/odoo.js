@@ -313,13 +313,16 @@ export default async function handler(req, res) {
                 } catch (e) {}
             }
 
-            const formattedAccounts = (accounts || []).map(acc => ({
-                id: acc.id,
-                code: acc.code || "-",
-                name: acc.name || "-",
-                type: acc.account_type || "-",
-                balance: balanceById[acc.id] ?? acc.current_balance ?? 0
-            }));
+            // Só contas com saldo: remove as zeradas (arredonda em centavos para ignorar resíduo de ponto flutuante)
+            const formattedAccounts = (accounts || [])
+                .map(acc => ({
+                    id: acc.id,
+                    code: acc.code || "-",
+                    name: acc.name || "-",
+                    type: acc.account_type || "-",
+                    balance: balanceById[acc.id] ?? acc.current_balance ?? 0
+                }))
+                .filter(acc => Math.round(Number(acc.balance) * 100) !== 0);
 
             return res.status(200).json({ result: formattedAccounts });
         }
