@@ -208,7 +208,7 @@
     <div id="homeSection" class="home-screen active-section">
         <h3>Selecione uma opção:</h3>
         <div class="menu-buttons">
-            <button class="btn-menu" onclick="mostrarTela('produtosSection'); buscarProdutos();">PRODUTOS</button>
+            <button class="btn-menu" onclick="mostrarTela('produtosSection'); carregarCategoriasProdutos(); buscarProdutos();">PRODUTOS</button>
             <button class="btn-menu" onclick="mostrarTela('estoqueSection'); buscarEstoque();">ESTOQUE</button>
             <button class="btn-menu" onclick="mostrarTela('vendasSection'); buscarVendas();">VENDAS</button>
             <button class="btn-menu" onclick="mostrarTela('financeiroSection'); buscarFinanceiro();">FINANCEIRO</button>
@@ -225,6 +225,9 @@
 
         <div class="search-box">
             <input type="text" id="searchInput" placeholder="Digite o nome do produto..." oninput="debounceSearch('produtos')">
+            <select id="categoryFilter" onchange="buscarProdutos()" title="Filtrar por categoria" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:220px;cursor:pointer;">
+                <option value="">Todas as categorias</option>
+            </select>
             <button onclick="buscarProdutos()">Pesquisar</button>
         </div>
 
@@ -612,7 +615,7 @@
     (function () {
         const nativeFetch = window.fetch.bind(window);
         const TTL = 5 * 60 * 1000;
-        const CACHEABLE = new Set(['get_sale_form_data', 'get_payment_journals']);
+        const CACHEABLE = new Set(['get_sale_form_data', 'get_payment_journals', 'get_product_categories']);
         const LATEST_ONLY = new Set(['get_products', 'get_stock', 'get_sales', 'get_financial_accounts', 'get_transfers', 'search_partners']);
         const cache = new Map();
         const inflight = new Map();
@@ -818,9 +821,29 @@
         }, 300);
     }
 
+    /* FILTRO DE CATEGORIAS (só categorias que têm produtos de venda) */
+    async function carregarCategoriasProdutos() {
+        const select = document.getElementById("categoryFilter");
+        try {
+            const response = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: "get_product_categories" })
+            });
+            const data = await response.json();
+            if (!data.result) return;
+
+            const atual = select.value;
+            select.innerHTML = '<option value="">Todas as categorias</option>' +
+                data.result.map(c => `<option value="${c.id}">${c.name} (${c.count})</option>`).join('');
+            if (atual && data.result.some(c => String(c.id) === atual)) select.value = atual;
+        } catch (e) { /* o filtro simplesmente fica só com "Todas as categorias" */ }
+    }
+
     /* 1. BUSCAR PRODUTOS */
     async function buscarProdutos() {
         const query = document.getElementById("searchInput").value.trim();
+        const category_id = document.getElementById("categoryFilter").value;
         const status = document.getElementById("statusProdutos");
         const results = document.getElementById("resultsProdutos");
 
@@ -830,7 +853,7 @@
             const response = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: "get_products", query })
+                body: JSON.stringify({ action: "get_products", query, category_id: category_id || null })
             });
 
             const data = await response.json();
