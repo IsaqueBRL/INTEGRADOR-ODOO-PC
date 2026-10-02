@@ -51,6 +51,8 @@ function cached(key, ttlMs, fn) {
     _cache.set(key, { p, exp: Date.now() + ttlMs });
     return p;
 }
+// Tela de Produtos: tipo "Mercadorias" (consu) + caixa "Vendas" marcada
+const PRODUCT_BASE_DOMAIN = [["type", "=", "consu"], ["sale_ok", "=", true]];
 const TTL_LONG = 10 * 60 * 1000;
 const TTL_PRODUCTS = 2 * 60 * 1000;
 const lookups = {
@@ -351,6 +353,7 @@ export default async function handler(req, res) {
             await execute("product.template", "write", [[Number(product_id)], writeData]);
             _cache.delete("sale_products");
             _cache.delete("transfer_products");
+            _cache.delete("product_categories");
             return res.status(200).json({ success: true });
         }
 
@@ -783,12 +786,44 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: true });
         }
 
-        // AÇÃO PADRÃO: PRODUTOS
+        // AÇÃO: CATEGORIAS DA TELA DE PRODUTOS (só as que têm produtos "Mercadorias" + "Vendas")
+        if (action === "get_product_categories") {
+            const cats = await cached("product_categories", TTL_PRODUCTS, async () => {
+                try {
+                    const groups = await execute("product.template", "read_group", [PRODUCT_BASE_DOMAIN], {
+                        groupby: ["categ_id"],
+                        fields: ["categ_id"],
+                        lazy: false
+                    });
+                    return (groups || [])
+                        .filter(g => Array.isArray(g.categ_id))
+                        .map(g => ({ id: g.categ_id[0], name: g.categ_id[1], count: g.__count ?? g.categ_id_count ?? 0 }));
+                } catch (e) {
+                    // reserva: lê só a categoria de cada produto e conta aqui mesmo
+                    const rows = await execute("product.template", "search_read", [PRODUCT_BASE_DOMAIN], { fields: ["categ_id"] });
+                    const map = {};
+                    (rows || []).forEach(r => {
+                        if (!Array.isArray(r.categ_id)) return;
+                        const k = r.categ_id[0];
+                        map[k] = map[k] || { id: k, name: r.categ_id[1], count: 0 };
+                        map[k].count++;
+                    });
+                    return Object.values(map);
+                }
+            });
+            cats.sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+            return res.status(200).json({ result: cats });
+        }
+
+        // AÇÃO PADRÃO: PRODUTOS (apenas tipo "Mercadorias" com "Vendas" marcado; categoria opcional)
         const query = body.query || "";
-        const domain = [["type", "!=", "service"]];
+        const categoryId = Number(body.category_id) || 0;
+        const domain = [...PRODUCT_BASE_DOMAIN];
+        if (categoryId) domain.push(["categ_id", "child_of", categoryId]);
         if (query) domain.push(["name", "ilike", query]);
         const result = await execute("product.template", "search_read", [domain], {
             fields: ["id", "name", "list_price", "standard_price", "qty_available", "type", "categ_id"],
+            order: "name asc",
             limit: 100
         });
 
