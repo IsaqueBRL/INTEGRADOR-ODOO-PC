@@ -584,7 +584,10 @@ export default async function handler(req, res) {
         // AÇÃO: BUSCAR ESTOQUE
         if (action === "get_stock") {
             const query = body.query || "";
-            const domain = [["quantity", ">", 0]];
+            // Somente "Locais internos" (igual ao filtro do Odoo); local opcional (inclui sublocais)
+            const locationId = Number(body.location_id) || 0;
+            const domain = [["quantity", ">", 0], ["location_id.usage", "=", "internal"]];
+            if (locationId) domain.push(["location_id", "child_of", locationId]);
             if (query) domain.push(["product_id.name", "ilike", query]);
 
             const result = await execute("stock.quant", "search_read", [domain], {
@@ -664,7 +667,7 @@ export default async function handler(req, res) {
         // AÇÃO: BUSCAR LOCAIS DE ESTOQUE INTERNOS (PARA TRANSFERÊNCIAS)
         if (action === "get_locations") {
             const locations = await lookups.locations();
-            return res.status(200).json({ result: locations || [] });
+            return res.status(200).json({ result: (locations || []).slice().sort((a, b) => (a.complete_name || "").localeCompare(b.complete_name || "", "pt-BR")) });
         }
 
         // AÇÃO: BUSCAR TRANSFERÊNCIAS INTERNAS
