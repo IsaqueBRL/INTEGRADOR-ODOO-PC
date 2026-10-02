@@ -340,6 +340,40 @@ export default async function handler(req, res) {
             return res.status(200).json({ result: warehouses || [] });
         }
 
+        // AÇÃO: PRODUTOS COM ESTOQUE EM UM ARMAZÉM (para as linhas do pedido de venda)
+        if (action === "get_warehouse_products") {
+            const whId = Number(body.warehouse_id) || 0;
+            if (!whId) return res.status(400).json({ error: "Armazém é obrigatório." });
+
+            const whs = await execute("stock.warehouse", "read", [[whId]], { fields: ["view_location_id", "lot_stock_id"] });
+            const wh = whs && whs[0];
+            if (!wh) return res.status(404).json({ error: "Armazém não encontrado." });
+            const rootLoc = Array.isArray(wh.view_location_id) ? wh.view_location_id[0] : wh.lot_stock_id[0];
+
+            // estoque físico do armazém (locais internos dele e sublocais), somado por produto
+            const quants = await execute("stock.quant", "search_read", [[
+                ["location_id", "child_of", rootLoc],
+                ["location_id.usage", "=", "internal"],
+                ["quantity", ">", 0]
+            ]], { fields: ["product_id", "quantity"], limit: 10000 });
+
+            const qtyByProduct = {};
+            (quants || []).forEach(q => {
+                if (!Array.isArray(q.product_id)) return;
+                qtyByProduct[q.product_id[0]] = (qtyByProduct[q.product_id[0]] || 0) + q.quantity;
+            });
+            const ids = Object.keys(qtyByProduct).map(Number);
+            if (ids.length === 0) return res.status(200).json({ products: [] });
+
+            const products = await execute("product.product", "search_read", [[["id", "in", ids], ["sale_ok", "=", true]]], {
+                fields: ["id", "display_name", "list_price"],
+                order: "display_name asc"
+            });
+            return res.status(200).json({
+                products: (products || []).map(pr => ({ ...pr, stock_qty: qtyByProduct[pr.id] }))
+            });
+        }
+
         // AÇÃO: ATUALIZAR PRODUTO
         if (action === "update_product") {
             const { product_id, name, list_price, standard_price } = body;
