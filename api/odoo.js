@@ -373,7 +373,33 @@ export default async function handler(req, res) {
             if (!order_id) {
                 return res.status(400).json({ error: "ID do pedido é obrigatório." });
             }
-            await execute("sale.order", "action_cancel", [[Number(order_id)]]);
+            const oid = Number(order_id);
+            const ctx = { disable_cancel_warning: true };
+
+            // O Odoo não deixa cancelar pedido BLOQUEADO: é preciso destravar antes.
+            let estavaBloqueado = false;
+            try {
+                const info = await execute("sale.order", "read", [[oid]], { fields: ["state", "locked"] });
+                estavaBloqueado = !!(info && info[0] && info[0].locked);
+            } catch (e) {
+                // versões do Odoo sem o campo "locked": o bloqueio era o estado "done"
+                const info = await execute("sale.order", "read", [[oid]], { fields: ["state"] });
+                estavaBloqueado = !!(info && info[0] && info[0].state === "done");
+            }
+
+            if (estavaBloqueado) {
+                await execute("sale.order", "action_unlock", [[oid]]);
+            }
+
+            try {
+                await execute("sale.order", "action_cancel", [[oid]], { context: ctx });
+            } catch (e) {
+                // se não deu para cancelar, devolve o pedido ao estado bloqueado em que estava
+                if (estavaBloqueado) {
+                    await execute("sale.order", "action_lock", [[oid]]).catch(() => {});
+                }
+                throw e;
+            }
             return res.status(200).json({ success: true });
         }
 
