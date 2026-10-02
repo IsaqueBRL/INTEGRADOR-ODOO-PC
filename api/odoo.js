@@ -670,6 +670,14 @@ export default async function handler(req, res) {
             if (query) {
                 domain.push('|', ['name', 'ilike', query], ['partner_id.name', 'ilike', query]);
             }
+            // Filtros: local/armazém e status (Orçamento = draft+sent, Confirmado = sale+done, Cancelado = cancel)
+            if (body.warehouse_id) {
+                domain.push(['warehouse_id', '=', parseInt(body.warehouse_id, 10)]);
+            }
+            const statusGroups = { draft: ['draft', 'sent'], sale: ['sale', 'done'], cancel: ['cancel'] };
+            if (body.order_status && statusGroups[body.order_status]) {
+                domain.push(['state', 'in', statusGroups[body.order_status]]);
+            }
 
             const orders = await execute("sale.order", "search_read", [domain], {
                 fields: ["id", "name", "partner_id", "amount_total", "state", "invoice_status", "invoice_ids", "warehouse_id"],
