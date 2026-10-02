@@ -400,6 +400,9 @@
         <label>Custo (R$)</label>
         <input type="number" id="editProdCost" step="0.01">
 
+        <label>Categoria</label>
+        <select id="editProdCategory"></select>
+
         <div class="modal-actions">
             <button class="btn-cancel" onclick="fecharModalEditProduto()">Cancelar</button>
             <button class="btn-save" id="btnSalvarProduto" onclick="salvarEdicaoProduto()">Salvar</button>
@@ -953,7 +956,7 @@
                         <td class="cost-col">R$ ${cost.toFixed(2)}</td>
                         <td><span class="stock-badge ${qtyClass}">${qty} un</span></td>
                         <td style="text-align: center;">
-                            <button class="btn-edit" onclick="abrirModalEditProduto(${prod.id}, '${safeName}', ${price}, ${cost})">Editar</button>
+                            <button class="btn-edit" onclick="abrirModalEditProduto(${prod.id}, '${safeName}', ${price}, ${cost}, ${Array.isArray(prod.categ_id) ? prod.categ_id[0] : 0})">Editar</button>
                         </td>
                     </tr>
                 `;
@@ -965,11 +968,34 @@
         }
     }
 
-    function abrirModalEditProduto(id, name, price, cost) {
+    let todasCategoriasProduto = null;
+    async function carregarCategoriasEdicao(categIdAtual) {
+        const select = document.getElementById('editProdCategory');
+        try {
+            if (!todasCategoriasProduto) {
+                const response = await fetch('/api/odoo', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: "get_all_product_categories" })
+                });
+                const data = await response.json();
+                if (!data.result) throw new Error('sem categorias');
+                todasCategoriasProduto = data.result;
+            }
+            select.innerHTML = todasCategoriasProduto.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+            if (categIdAtual) select.value = String(categIdAtual);
+        } catch (e) {
+            select.innerHTML = '<option value="">Erro ao carregar categorias</option>';
+        }
+    }
+
+    function abrirModalEditProduto(id, name, price, cost, categId) {
         document.getElementById('editProdId').value = id;
         document.getElementById('editProdName').value = name;
         document.getElementById('editProdPrice').value = price;
         document.getElementById('editProdCost').value = cost;
+        document.getElementById('editProdCategory').innerHTML = '<option value="">Carregando...</option>';
+        carregarCategoriasEdicao(categId);
         document.getElementById('editProductModal').style.display = 'flex';
     }
 
@@ -982,6 +1008,7 @@
         const name = document.getElementById('editProdName').value;
         const list_price = document.getElementById('editProdPrice').value;
         const standard_price = document.getElementById('editProdCost').value;
+        const categ_id = document.getElementById('editProdCategory').value;
         const btn = document.getElementById('btnSalvarProduto');
 
         btn.innerText = "Salvando...";
@@ -996,7 +1023,8 @@
                     product_id: id,
                     name,
                     list_price,
-                    standard_price
+                    standard_price,
+                    categ_id: categ_id || null
                 })
             });
 
@@ -1004,6 +1032,7 @@
             if (data.success) {
                 alert('Produto atualizado com sucesso no Odoo!');
                 fecharModalEditProduto();
+                carregarCategoriasProdutos(); // atualiza as contagens do filtro de categorias
                 buscarProdutos();
             } else {
                 alert(data.error || 'Erro ao atualizar produto.');
