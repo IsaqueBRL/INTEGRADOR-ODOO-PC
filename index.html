@@ -41,6 +41,12 @@
         .search-box input { flex: 1; padding: 10px 14px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 15px; outline: none; }
         .search-box button { padding: 10px 18px; background-color: var(--primary-color); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 15px; font-weight: 600; white-space: nowrap; }
 
+        .search-box.filtros { flex-wrap: wrap; align-items: flex-end; }
+        .search-box.filtros input[type="text"] { flex: 1 1 150px; min-width: 130px; }
+        .filtro-campo { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: #666; font-weight: 600; }
+        .filter-select, .filtro-campo input[type="date"] { padding: 10px 10px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 14px; background: #fff; max-width: 190px; cursor: pointer; }
+        .filtro-campo input[type="date"] { flex: none; font-family: inherit; }
+
         .status { text-align: center; margin-bottom: 15px; font-size: 14px; color: #555; font-weight: 500; }
 
         .table-container { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 8px; border: 1px solid var(--border-color); }
@@ -209,10 +215,10 @@
         <h3>Selecione uma opção:</h3>
         <div class="menu-buttons">
             <button class="btn-menu" onclick="abrirTelaProdutos();">PRODUTOS</button>
-            <button class="btn-menu" onclick="mostrarTela('estoqueSection'); carregarLocaisEstoque(); buscarEstoque();">ESTOQUE</button>
+            <button class="btn-menu" onclick="abrirTelaEstoque();">ESTOQUE</button>
             <button class="btn-menu" onclick="mostrarTela('vendasSection'); buscarVendas();">VENDAS</button>
             <button class="btn-menu" onclick="mostrarTela('financeiroSection'); buscarFinanceiro();">FINANCEIRO</button>
-            <button class="btn-menu" onclick="mostrarTela('transferenciasSection'); buscarTransferencias();">TRANSFERÊNCIAS</button>
+            <button class="btn-menu" onclick="abrirTelaTransferencias();">TRANSFERÊNCIAS</button>
         </div>
     </div>
 
@@ -261,12 +267,13 @@
         <div class="search-box">
             <input type="text" id="searchEstoqueInput" placeholder="Digite o nome do produto..." oninput="debounceSearch('estoque')">
             <select id="locationFilter" onchange="buscarEstoque()" title="Filtrar por local" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:220px;cursor:pointer;">
-                <option value="">Todos os locais</option>
+                <option value="">Selecione um local...</option>
+                <option value="all">Todos os locais</option>
             </select>
             <button onclick="buscarEstoque()">Pesquisar</button>
         </div>
 
-        <div id="statusEstoque" class="status">Carregando estoque...</div>
+        <div id="statusEstoque" class="status">Escolha um local ou digite o nome do produto para ver o estoque.</div>
 
         <div class="table-container">
             <table>
@@ -292,12 +299,26 @@
             </div>
         </div>
 
-        <div class="search-box">
-            <input type="text" id="searchTransferenciasInput" placeholder="Digite a referência da transferência..." oninput="debounceSearch('transferencias')">
+        <div class="search-box filtros">
+            <input type="text" id="searchTransferenciasInput" placeholder="Referência..." oninput="debounceSearch('transferencias')">
+            <select id="transferOrigemFilter" class="filter-select" onchange="buscarTransferencias()" title="Filtrar por local de origem">
+                <option value="">Origem...</option>
+                <option value="all">Todas as origens</option>
+            </select>
+            <select id="transferDestinoFilter" class="filter-select" onchange="buscarTransferencias()" title="Filtrar por local de destino">
+                <option value="">Destino...</option>
+                <option value="all">Todos os destinos</option>
+            </select>
+            <label class="filtro-campo">Período: de
+                <input type="date" id="transferDataDe" onchange="buscarTransferencias()" title="Data efetiva a partir de">
+            </label>
+            <label class="filtro-campo">até
+                <input type="date" id="transferDataAte" onchange="buscarTransferencias()" title="Data efetiva até">
+            </label>
             <button onclick="buscarTransferencias()">Pesquisar</button>
         </div>
 
-        <div id="statusTransferencias" class="status">Carregando transferências...</div>
+        <div id="statusTransferencias" class="status">Escolha uma origem, um destino, um período ou digite a referência para ver as transferências.</div>
 
         <div class="table-container">
             <table>
@@ -1083,8 +1104,8 @@
 
     /* 2. BUSCAR ESTOQUE */
     /* FILTRO DE LOCAIS (somente locais internos) */
-    async function carregarLocaisEstoque() {
-        const select = document.getElementById("locationFilter");
+    // Preenche selects de local (internos do Odoo). Cada config: { id, placeholder, todos }
+    async function carregarLocaisFiltro(configs) {
         try {
             const response = await fetch('/api/odoo', {
                 method: 'POST',
@@ -1093,19 +1114,44 @@
             });
             const data = await response.json();
             if (!data.result) return;
-
-            const atual = select.value;
-            select.innerHTML = '<option value="">Todos os locais</option>' +
-                data.result.map(l => `<option value="${l.id}">${l.complete_name}</option>`).join('');
-            if (atual && data.result.some(l => String(l.id) === atual)) select.value = atual;
-        } catch (e) { /* o filtro fica só com "Todos os locais" */ }
+            configs.forEach(cfg => {
+                const select = document.getElementById(cfg.id);
+                const atual = select.value;
+                select.innerHTML = `<option value="">${cfg.placeholder}</option><option value="all">${cfg.todos}</option>` +
+                    data.result.map(l => `<option value="${l.id}">${l.complete_name}</option>`).join('');
+                if (atual && (atual === 'all' || data.result.some(l => String(l.id) === atual))) select.value = atual;
+            });
+        } catch (e) { /* os filtros ficam só com as opções padrão */ }
     }
+
+    function carregarLocaisEstoque() {
+        return carregarLocaisFiltro([{ id: 'locationFilter', placeholder: 'Selecione um local...', todos: 'Todos os locais' }]);
+    }
+
+    // Abre a tela de Estoque sem carregar nada: o usuário escolhe os filtros primeiro
+    function abrirTelaEstoque() {
+        mostrarTela('estoqueSection');
+        document.getElementById('searchEstoqueInput').value = '';
+        document.getElementById('locationFilter').value = '';
+        carregarLocaisEstoque();
+        buscarEstoque(); // sem filtro, só mostra a orientação
+    }
+
+    let estoqueReqId = 0;
 
     async function buscarEstoque() {
         const query = document.getElementById("searchEstoqueInput").value.trim();
-        const location_id = document.getElementById("locationFilter").value;
+        const localEscolhido = document.getElementById("locationFilter").value;
+        const location_id = localEscolhido === 'all' ? '' : localEscolhido;
         const status = document.getElementById("statusEstoque");
         const results = document.getElementById("resultsEstoque");
+        const reqId = ++estoqueReqId;
+
+        if (!query && !localEscolhido) {
+            status.innerText = "Escolha um local ou digite o nome do produto para ver o estoque.";
+            results.innerHTML = "";
+            return;
+        }
 
         status.innerText = "Pesquisando estoque...";
 
@@ -1117,6 +1163,7 @@
             });
 
             const data = await response.json();
+            if (reqId !== estoqueReqId) return;
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhum registro de estoque encontrado.";
@@ -1142,6 +1189,7 @@
             });
             results.innerHTML = html;
         } catch (e) {
+            if (reqId !== estoqueReqId) return;
             status.innerText = "Erro ao carregar estoque.";
             results.innerHTML = `<tr><td colspan="3" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
@@ -2428,10 +2476,52 @@
         }
     }
 
+    // Abre a tela de Transferências sem carregar nada: o usuário escolhe os filtros primeiro
+    function abrirTelaTransferencias() {
+        mostrarTela('transferenciasSection');
+        ['searchTransferenciasInput', 'transferOrigemFilter', 'transferDestinoFilter', 'transferDataDe', 'transferDataAte']
+            .forEach(id => { document.getElementById(id).value = ''; });
+        carregarLocaisFiltro([
+            { id: 'transferOrigemFilter', placeholder: 'Origem...', todos: 'Todas as origens' },
+            { id: 'transferDestinoFilter', placeholder: 'Destino...', todos: 'Todos os destinos' }
+        ]);
+        buscarTransferencias(); // sem filtro, só mostra a orientação
+    }
+
+    // Data local do campo (YYYY-MM-DD) -> formato UTC do Odoo (YYYY-MM-DD HH:MM:SS)
+    function dataLocalParaOdoo(valor, fimDoDia) {
+        if (!valor) return '';
+        const d = new Date(valor + (fimDoDia ? 'T23:59:59' : 'T00:00:00'));
+        if (isNaN(d.getTime())) return '';
+        return d.toISOString().slice(0, 19).replace('T', ' ');
+    }
+
+    let transferenciasReqId = 0;
+
     async function buscarTransferencias() {
         const query = document.getElementById("searchTransferenciasInput").value.trim();
+        const origemEscolhida = document.getElementById("transferOrigemFilter").value;
+        const destinoEscolhido = document.getElementById("transferDestinoFilter").value;
+        const dataDe = document.getElementById("transferDataDe").value;
+        const dataAte = document.getElementById("transferDataAte").value;
         const status = document.getElementById("statusTransferencias");
         const results = document.getElementById("resultsTransferencias");
+        const reqId = ++transferenciasReqId;
+
+        if (!query && !origemEscolhida && !destinoEscolhido && !dataDe && !dataAte) {
+            status.innerText = "Escolha uma origem, um destino, um período ou digite a referência para ver as transferências.";
+            results.innerHTML = "";
+            return;
+        }
+
+        const payload = {
+            action: "get_transfers",
+            query,
+            origin_id: origemEscolhida === 'all' ? '' : origemEscolhida,
+            dest_id: destinoEscolhido === 'all' ? '' : destinoEscolhido,
+            date_from: dataLocalParaOdoo(dataDe, false),
+            date_to: dataLocalParaOdoo(dataAte, true)
+        };
 
         status.innerText = "Pesquisando transferências...";
 
@@ -2439,9 +2529,10 @@
             const response = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: "get_transfers", query })
+                body: JSON.stringify(payload)
             });
             const data = await response.json();
+            if (reqId !== transferenciasReqId) return;
             const transfers = data.result || [];
 
             if (transfers.length === 0) {
@@ -2471,6 +2562,7 @@
             results.innerHTML = html;
             ordenarPorDataDesc('resultsTransferencias');
         } catch (e) {
+            if (reqId !== transferenciasReqId) return;
             status.innerText = "Erro ao buscar transferências.";
         }
     }
