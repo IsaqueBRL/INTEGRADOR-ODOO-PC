@@ -344,6 +344,7 @@
             <table>
                 <thead>
                     <tr>
+                        <th>DATA DO PEDIDO</th>
                         <th>NÚMERO DO PEDIDO</th>
                         <th>CLIENTE</th>
                         <th>LOCAL/ARMAZÉM</th>
@@ -769,6 +770,15 @@
             const cellA = rowA.children[colIndex] ? rowA.children[colIndex].innerText.trim() : '';
             const cellB = rowB.children[colIndex] ? rowB.children[colIndex].innerText.trim() : '';
 
+            // colunas de data guardam o valor ISO em data-sort (vazio = sem data, fica como o menor)
+            const dsA = rowA.children[colIndex] ? rowA.children[colIndex].dataset.sort : undefined;
+            const dsB = rowB.children[colIndex] ? rowB.children[colIndex].dataset.sort : undefined;
+            if (dsA !== undefined || dsB !== undefined) {
+                const a = dsA || '', b = dsB || '';
+                const cmp = a < b ? -1 : (a > b ? 1 : 0);
+                return isAscending ? -cmp : cmp;
+            }
+
             const numA = parseValorVisual(cellA);
             const numB = parseValorVisual(cellB);
 
@@ -873,7 +883,9 @@
     let transferHasChanges = false;
 
     function mostrarTela(idTela) {
-        document.getElementById('homeSection').style.display = 'none';
+        const homeEl = document.getElementById('homeSection');
+        homeEl.style.display = 'none';
+        homeEl.classList.remove('active-section'); // essa classe usa !important e mantinha o menu visível
         document.getElementById('produtosSection').style.display = 'none';
         document.getElementById('estoqueSection').style.display = 'none';
         document.getElementById('vendasSection').style.display = 'none';
@@ -882,6 +894,7 @@
 
         const telaTarget = document.getElementById(idTela);
         telaTarget.style.display = idTela === 'homeSection' ? 'flex' : 'block';
+        if (idTela === 'homeSection') telaTarget.classList.add('active-section');
     }
 
     function debounceSearch(tipo) {
@@ -965,7 +978,7 @@
             results.innerHTML = html;
         } catch (e) {
             status.innerText = "Erro ao carregar produtos.";
-            results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
+            results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
     }
 
@@ -1173,7 +1186,7 @@
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhum pedido encontrado.";
-                results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #888;">Nenhum pedido encontrado</td></tr>`;
+                results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #888;">Nenhum pedido encontrado</td></tr>`;
                 return;
             }
 
@@ -1190,6 +1203,7 @@
 
                 html += `
                     <tr style="cursor: pointer;" onclick="abrirDetalhesVenda(${sale.id})">
+                        <td data-sort="${dataParaOrdenar(sale.date_order)}">${formatarDataEfetiva(sale.date_order)}</td>
                         <td><strong style="color: var(--primary-color); text-decoration: underline;">${orderNum}</strong></td>
                         <td>${clientName}</td>
                         <td>${warehouseName}</td>
@@ -1208,9 +1222,10 @@
                 `;
             });
             results.innerHTML = html;
+            ordenarPorDataDesc('resultsVendas');
         } catch (e) {
             status.innerText = "Erro ao carregar pedidos.";
-            results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
+            results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
     }
 
@@ -2307,6 +2322,26 @@
         }
     }
 
+    // Valor ISO (UTC) para ordenar a coluna de data; vazio quando não há data
+    function dataParaOrdenar(valor) {
+        return valor ? String(valor).replace(' ', 'T') + 'Z' : '';
+    }
+
+    // Deixa a tabela ordenada da data mais recente para a mais antiga (sem datas ficam no fim) e marca o cabeçalho com ↓
+    function ordenarPorDataDesc(tbodyId) {
+        const tbody = document.getElementById(tbodyId);
+        const table = tbody.closest('table');
+        const ths = table.querySelectorAll('thead th');
+        ths.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
+        if (ths[0]) ths[0].classList.add('sort-desc');
+        const rows = Array.from(tbody.querySelectorAll('tr')).filter(r => r.children[0] && r.children[0].dataset.sort !== undefined);
+        rows.sort((ra, rb) => {
+            const a = ra.children[0].dataset.sort || '', b = rb.children[0].dataset.sort || '';
+            return a < b ? 1 : (a > b ? -1 : 0);
+        });
+        rows.forEach(r => tbody.appendChild(r));
+    }
+
     // Odoo devolve datas em UTC ("YYYY-MM-DD HH:MM:SS"); mostra no horário local, ex.: 18/09/2026 14:40
     function formatarDataEfetiva(valor) {
         if (!valor) return '-';
@@ -2403,7 +2438,7 @@
 
                 html += `
                     <tr style="cursor: pointer;" onclick="abrirDetalhesTransferencia(${t.id})">
-                        <td>${formatarDataEfetiva(t.date_done)}</td>
+                        <td data-sort="${dataParaOrdenar(t.date_done)}">${formatarDataEfetiva(t.date_done)}</td>
                         <td><strong style="color: var(--primary-color); text-decoration: underline;">${t.name}</strong></td>
                         <td>${de}</td>
                         <td>${para}</td>
@@ -2412,6 +2447,7 @@
                 `;
             });
             results.innerHTML = html;
+            ordenarPorDataDesc('resultsTransferencias');
         } catch (e) {
             status.innerText = "Erro ao buscar transferências.";
         }
