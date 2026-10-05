@@ -65,6 +65,26 @@ const lookups = {
     internalPickingTypes: () => cached("picking_types_internal", TTL_LONG, () => execute("stock.picking.type", "search_read", [[["code", "=", "internal"]]], { fields: ["id", "name", "default_location_src_id", "default_location_dest_id"] }))
 };
 
+// Contas de caixa/banco (mesmo critério da tela Financeiro), incluindo as de saldo zero
+async function getCashBankAccounts() {
+    const accounts = await execute("account.account", "search_read", [[["account_type", "in", ["asset_cash", "bank_and_cash"]]]], {
+        fields: ["id", "code", "name"],
+        order: "code asc",
+        limit: 200
+    });
+    return accounts || [];
+}
+
+// Diário "Transferências" (código TRF)
+async function getTransferJournal() {
+    const journals = await execute("account.journal", "search_read", [["|", ["name", "=", "Transferências"], ["code", "=", "TRF"]]], {
+        fields: ["id", "name", "code"],
+        limit: 5
+    });
+    if (!journals || journals.length === 0) return null;
+    return journals.find(j => j.name === "Transferências") || journals[0];
+}
+
 // Remove de um objeto os campos que não existem naquele modelo do Odoo (evita "Invalid field ..." entre versões)
 async function onlyExistingFields(model, vals) {
     try {
@@ -789,6 +809,66 @@ export default async function handler(req, res) {
                 .map(pr => ({ ...pr, stock_qty: qtyByProduct[pr.id] }))
                 .sort((a, b) => (a.display_name || "").localeCompare(b.display_name || "", "pt-BR"));
             return res.status(200).json({ products: list });
+        }
+
+        // AÇÃO: DADOS PARA A TRANSFERÊNCIA ENTRE CONTAS (contas de caixa/banco + diário "Transferências")
+        if (action === "get_account_transfer_setup") {
+            const accounts = await getCashBankAccounts();
+            const journal = await getTransferJournal();
+            return res.status(200).json({
+                accounts: accounts.map(a => ({ id: a.id, code: a.code || "", name: a.name || "" })),
+                journal: journal ? { id: journal.id, name: journal.name } : null
+            });
+        }
+
+        // AÇÃO: LANÇAR TRANSFERÊNCIA ENTRE CONTAS (lançamento de diário no diário "Transferências")
+        if (action === "create_account_transfer") {
+            const fromId = Number(body.from_account_id) || 0;
+            const toId = Number(body.to_account_id) || 0;
+            const amount = Math.round(Number(body.amount) * 100) / 100;
+
+            if (!fromId || !toId) return res.status(400).json({ error: "Selecione a conta de origem e a conta de destino." });
+            if (fromId === toId) return res.status(400).json({ error: "A conta de origem e a de destino devem ser diferentes." });
+            if (!(amount > 0)) return res.status(400).json({ error: "Informe um valor maior que zero." });
+
+            // só aceita contas de caixa/banco
+            const allowed = (await getCashBankAccounts()).map(a => a.id);
+            if (!allowed.includes(fromId) || !allowed.includes(toId)) {
+                return res.status(400).json({ error: "Conta inválida para transferência." });
+            }
+
+            const journal = await getTransferJournal();
+            if (!journal) return res.status(400).json({ error: 'Diário "Transferências" não encontrado no Odoo.' });
+
+            // data automática (a do painel, que usa o fuso do usuário); se fugir de ±1 dia do servidor, usa a do servidor
+            const serverToday = new Date().toISOString().slice(0, 10);
+            let entryDate = serverToday;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(body.date || "")) {
+                const diffDays = Math.abs(new Date(body.date + "T00:00:00Z") - new Date(serverToday + "T00:00:00Z")) / 86400000;
+                if (diffDays <= 1) entryDate = body.date;
+            }
+
+            // 1ª linha: conta que RECEBE (débito); 2ª linha: conta de ONDE SAI (crédito)
+            const moveId = await execute("account.move", "create", [{
+                move_type: "entry",
+                journal_id: journal.id,
+                date: entryDate,
+                line_ids: [
+                    [0, 0, { account_id: toId, debit: amount, credit: 0 }],
+                    [0, 0, { account_id: fromId, debit: 0, credit: amount }]
+                ]
+            }]);
+
+            try {
+                await execute("account.move", "action_post", [[moveId]]);
+            } catch (e) {
+                // não deixa um lançamento provisório órfão no Odoo
+                await execute("account.move", "unlink", [[moveId]]).catch(() => {});
+                throw e;
+            }
+
+            const moves = await execute("account.move", "read", [[moveId]], { fields: ["name"] }).catch(() => []);
+            return res.status(200).json({ success: true, id: moveId, name: (moves && moves[0] && moves[0].name) || "" });
         }
 
         // AÇÃO: BUSCAR TRANSFERÊNCIAS INTERNAS
