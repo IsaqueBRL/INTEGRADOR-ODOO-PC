@@ -384,7 +384,10 @@
     <div id="financeiroSection" class="view-section">
         <div class="top-nav">
             <button class="btn-back" onclick="mostrarTela('homeSection')">← Voltar</button>
-            <h2>Plano de Contas / Saldo Financeiro</h2>
+            <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                <h2>Plano de Contas / Saldo Financeiro</h2>
+                <button class="btn-action" onclick="abrirModalTransferenciaContas()">+ Transferência entre Contas</button>
+            </div>
         </div>
 
         <div class="search-box">
@@ -405,6 +408,33 @@
                 </thead>
                 <tbody id="resultsFinanceiro"></tbody>
             </table>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Transferência entre Contas (lançamento de diário) -->
+<div class="modal-overlay" id="accountTransferModal" style="z-index: 1100;">
+    <div class="modal" style="max-width: 460px;">
+        <h2>Transferência entre Contas</h2>
+
+        <label>Diário</label>
+        <input type="text" id="acctTrfJournal" readonly disabled>
+
+        <label>Data contábil</label>
+        <input type="text" id="acctTrfDate" readonly disabled>
+
+        <label>Conta de origem (de onde sai o valor)</label>
+        <select id="acctTrfFrom"></select>
+
+        <label>Conta de destino (para onde entra o valor)</label>
+        <select id="acctTrfTo"></select>
+
+        <label>Valor (R$)</label>
+        <input type="number" id="acctTrfAmount" step="0.01" min="0.01" placeholder="0,00">
+
+        <div class="modal-actions">
+            <button class="btn-cancel" onclick="fecharModalTransferenciaContas()">Cancelar</button>
+            <button class="btn-save" id="btnLancarTransfContas" onclick="lancarTransferenciaContas()">Lançar</button>
         </div>
     </div>
 </div>
@@ -1300,6 +1330,80 @@
     }
 
     /* 4. BUSCAR FINANCEIRO */
+    // ===== TRANSFERÊNCIA ENTRE CONTAS =====
+    let acctTrfDateIso = '';
+
+    async function abrirModalTransferenciaContas() {
+        const selFrom = document.getElementById('acctTrfFrom');
+        const selTo = document.getElementById('acctTrfTo');
+
+        // data de hoje (fuso local), só exibida: o usuário não edita
+        const hoje = new Date();
+        const pad = n => String(n).padStart(2, '0');
+        acctTrfDateIso = `${hoje.getFullYear()}-${pad(hoje.getMonth() + 1)}-${pad(hoje.getDate())}`;
+        document.getElementById('acctTrfDate').value = `${pad(hoje.getDate())}/${pad(hoje.getMonth() + 1)}/${hoje.getFullYear()}`;
+        document.getElementById('acctTrfJournal').value = 'Transferências';
+        document.getElementById('acctTrfAmount').value = '';
+
+        try {
+            const res = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'get_account_transfer_setup' })
+            });
+            const data = await res.json();
+            if (!data.accounts) return alert(data.error || 'Não foi possível carregar as contas.');
+            if (!data.journal) return alert('Diário "Transferências" não encontrado no Odoo.');
+
+            document.getElementById('acctTrfJournal').value = data.journal.name;
+            const opcoes = data.accounts.map(a => `<option value="${a.id}">${a.code ? a.code + ' ' : ''}${a.name}</option>`).join('');
+            selFrom.innerHTML = '<option value="">Selecione a conta de origem...</option>' + opcoes;
+            selTo.innerHTML = '<option value="">Selecione a conta de destino...</option>' + opcoes;
+            document.getElementById('accountTransferModal').style.display = 'flex';
+        } catch (e) {
+            alert('Erro ao conectar com a API do Odoo.');
+        }
+    }
+
+    function fecharModalTransferenciaContas() {
+        document.getElementById('accountTransferModal').style.display = 'none';
+    }
+
+    async function lancarTransferenciaContas() {
+        const from_account_id = document.getElementById('acctTrfFrom').value;
+        const to_account_id = document.getElementById('acctTrfTo').value;
+        const amount = parseFloat(document.getElementById('acctTrfAmount').value);
+        const btn = document.getElementById('btnLancarTransfContas');
+
+        if (!from_account_id || !to_account_id) return alert('Selecione a conta de origem e a conta de destino.');
+        if (from_account_id === to_account_id) return alert('A conta de origem e a de destino devem ser diferentes.');
+        if (!(amount > 0)) return alert('Informe um valor maior que zero.');
+
+        btn.innerText = 'Lançando...';
+        btn.disabled = true;
+
+        try {
+            const res = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'create_account_transfer', from_account_id, to_account_id, amount, date: acctTrfDateIso })
+            });
+            const data = await res.json();
+            if (data.success) {
+                alert(`Transferência ${data.name || ''} lançada com sucesso!`.replace('  ', ' '));
+                fecharModalTransferenciaContas();
+                buscarFinanceiro();
+            } else {
+                alert(data.error || 'Erro ao lançar a transferência.');
+            }
+        } catch (e) {
+            alert('Erro ao conectar com a API do Odoo.');
+        } finally {
+            btn.innerText = 'Lançar';
+            btn.disabled = false;
+        }
+    }
+
     async function buscarFinanceiro() {
         const query = document.getElementById("searchFinanceiroInput").value.trim();
         const status = document.getElementById("statusFinanceiro");
