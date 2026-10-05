@@ -796,6 +796,11 @@ export default async function handler(req, res) {
             const query = body.query || "";
             const domain = [["picking_type_id.code", "=", "internal"]];
             if (query) domain.push(["name", "ilike", query]);
+            // filtros: origem, destino (incluem sublocais) e período da data efetiva (já em UTC, vindo do painel)
+            if (Number(body.origin_id)) domain.push(["location_id", "child_of", Number(body.origin_id)]);
+            if (Number(body.dest_id)) domain.push(["location_dest_id", "child_of", Number(body.dest_id)]);
+            if (body.date_from) domain.push(["date_done", ">=", body.date_from]);
+            if (body.date_to) domain.push(["date_done", "<=", body.date_to]);
 
             const result = await execute("stock.picking", "search_read", [domain], {
                 fields: ["id", "name", "location_id", "location_dest_id", "state", "date_done"],
