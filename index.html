@@ -302,6 +302,7 @@
             <table>
                 <thead>
                     <tr>
+                        <th>DATA EFETIVA</th>
                         <th>REFERÊNCIA</th>
                         <th>DE</th>
                         <th>PARA</th>
@@ -579,7 +580,7 @@
         <div style="display: flex; gap: 12px; flex-wrap: wrap;">
             <div style="flex: 1; min-width: 200px;">
                 <label>Local de Origem</label>
-                <select id="transferLocationSrc" onchange="marcarAlteracaoTransferencia()"></select>
+                <select id="transferLocationSrc" onchange="aoTrocarOrigemTransferencia()"></select>
             </div>
             <div style="flex: 1; min-width: 200px;">
                 <label>Local de Destino</label>
@@ -631,7 +632,7 @@
         const nativeFetch = window.fetch.bind(window);
         const TTL = 5 * 60 * 1000;
         const CACHEABLE = new Set(['get_sale_form_data', 'get_payment_journals', 'get_product_categories', 'get_locations']);
-        const LATEST_ONLY = new Set(['get_products', 'get_stock', 'get_sales', 'get_financial_accounts', 'get_transfers', 'search_partners', 'get_warehouse_products']);
+        const LATEST_ONLY = new Set(['get_products', 'get_stock', 'get_sales', 'get_financial_accounts', 'get_transfers', 'search_partners', 'get_warehouse_products', 'get_location_products']);
         const cache = new Map();
         const inflight = new Map();
         const controllers = new Map();
@@ -2306,6 +2307,70 @@
         }
     }
 
+    // Odoo devolve datas em UTC ("YYYY-MM-DD HH:MM:SS"); mostra no horário local, ex.: 18/09/2026 14:40
+    function formatarDataEfetiva(valor) {
+        if (!valor) return '-';
+        const d = new Date(String(valor).replace(' ', 'T') + 'Z');
+        if (isNaN(d.getTime())) return '-';
+        return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+
+    // Traz só os produtos que têm estoque no local de origem escolhido
+    async function carregarProdutosDaOrigem(locationId) {
+        if (!locationId) { availableTransferProducts = []; return false; }
+        try {
+            const res = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'get_location_products', location_id: Number(locationId) })
+            });
+            const data = await res.json();
+            if (!data.products) {
+                availableTransferProducts = [];
+                console.error('get_location_products:', data.error || data);
+                alert('Não foi possível carregar os produtos deste local: ' + (data.error || 'resposta inválida do servidor'));
+                return false;
+            }
+            availableTransferProducts = data.products;
+            return true;
+        } catch (e) {
+            availableTransferProducts = [];
+            console.error('get_location_products:', e);
+            alert('Não foi possível carregar os produtos deste local: ' + (e.message || 'erro de conexão'));
+            return false;
+        }
+    }
+
+    // Monta as opções do select de produto; mantém o produto já escolhido mesmo que não esteja na lista
+    function opcoesProdutoTransferencia(selecionadoId, selecionadoNome, avisarSemEstoque) {
+        let opts = '<option value="">Selecione um produto...</option>' +
+            availableTransferProducts.map(p => `<option value="${p.id}">${labelProduto(p)}</option>`).join('');
+        if (selecionadoId && !availableTransferProducts.some(p => String(p.id) === String(selecionadoId))) {
+            opts += `<option value="${selecionadoId}">${selecionadoNome || ('Produto ' + selecionadoId)}${avisarSemEstoque ? ' ⚠ sem estoque neste local' : ''}</option>`;
+        }
+        return opts;
+    }
+
+    // Ao trocar o local de origem: recarrega os produtos e atualiza as linhas já adicionadas
+    async function aoTrocarOrigemTransferencia() {
+        if (!isCurrentTransferEditable) return;
+        marcarAlteracaoTransferencia();
+        const ok = await carregarProdutosDaOrigem(document.getElementById('transferLocationSrc').value);
+        if (!ok) return;
+
+        let semEstoque = 0;
+        document.querySelectorAll('#transferLinesBody .line-product').forEach(sel => {
+            const cur = sel.value;
+            const curText = (sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : '').replace(/ \(\d+(\.\d+)? un\)$/, '').replace(/ ⚠.*$/, '');
+            sel.innerHTML = opcoesProdutoTransferencia(cur, curText, true);
+            sel.value = cur;
+            if (cur && !availableTransferProducts.some(p => String(p.id) === cur)) semEstoque++;
+        });
+        if (semEstoque > 0) {
+            alert('Atenção: ' + semEstoque + ' produto(s) da transferência não têm estoque neste local (marcados com ⚠).');
+        }
+    }
+
     async function buscarTransferencias() {
         const query = document.getElementById("searchTransferenciasInput").value.trim();
         const status = document.getElementById("statusTransferencias");
@@ -2338,6 +2403,7 @@
 
                 html += `
                     <tr style="cursor: pointer;" onclick="abrirDetalhesTransferencia(${t.id})">
+                        <td>${formatarDataEfetiva(t.date_done)}</td>
                         <td><strong style="color: var(--primary-color); text-decoration: underline;">${t.name}</strong></td>
                         <td>${de}</td>
                         <td>${para}</td>
@@ -2393,6 +2459,12 @@
             const isDraft = picking.state === 'draft';
             isCurrentTransferEditable = isDraft;
 
+            // em rascunho, a lista de produtos vem só do local de origem (igual às Vendas)
+            if (isDraft) {
+                const origemId = Array.isArray(picking.location_id) ? picking.location_id[0] : picking.location_id;
+                await carregarProdutosDaOrigem(origemId);
+            }
+
             document.getElementById('transferModalTitle').innerText = `Transferência ${picking.name}`;
             const meta = getTransferStatusMeta(picking.state);
             const statusBadge = document.getElementById('transferStatusBadge');
@@ -2428,15 +2500,15 @@
 
     function renderTransferLines(lines, editavel) {
         const tbody = document.getElementById('transferLinesBody');
-        const baseOptions = availableTransferProducts.map(p => `<option value="${p.id}">${p.display_name}</option>`).join('');
         let html = "";
 
         lines.forEach(line => {
             const prodId = Array.isArray(line.product_id) ? line.product_id[0] : line.product_id;
-            const options = baseOptions.replace(`<option value="${prodId}">`, `<option value="${prodId}" selected>`);
+            const prodNome = Array.isArray(line.product_id) ? line.product_id[1] : '';
+            const options = opcoesProdutoTransferencia(prodId, prodNome, editavel);
 
             html += `
-                <tr class="line-row" data-line-id="${line.id || ''}">
+                <tr class="line-row" data-line-id="${line.id || ''}" data-product-id="${prodId}">
                     <td><select class="line-product" ${editavel ? '' : 'disabled'} onchange="marcarAlteracaoTransferencia()">${options}</select></td>
                     <td><input type="number" class="line-qty" value="${line.product_uom_qty || 1}" step="1" ${editavel ? '' : 'readonly'} oninput="marcarAlteracaoTransferencia()"></td>
                     <td>${editavel ? `<button class="btn-remove-line" onclick="removerLinhaTransferencia(this)">×</button>` : ''}</td>
@@ -2444,15 +2516,17 @@
             `;
         });
         tbody.innerHTML = html;
+        // seleciona o produto de cada linha
+        tbody.querySelectorAll('.line-row').forEach(row => {
+            row.querySelector('.line-product').value = row.getAttribute('data-product-id');
+        });
     }
 
     function adicionarLinhaTransferencia() {
         if (!isCurrentTransferEditable) return;
         const tbody = document.getElementById('transferLinesBody');
 
-        let options = `<option value="">Selecione um produto...</option>` + availableTransferProducts.map(p =>
-            `<option value="${p.id}">${p.display_name}</option>`
-        ).join('');
+        const options = opcoesProdutoTransferencia(null, null, false);
 
         const tr = document.createElement('tr');
         tr.className = 'line-row';
