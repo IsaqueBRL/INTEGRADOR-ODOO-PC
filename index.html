@@ -208,7 +208,7 @@
     <div id="homeSection" class="home-screen active-section">
         <h3>Selecione uma opção:</h3>
         <div class="menu-buttons">
-            <button class="btn-menu" onclick="mostrarTela('produtosSection'); carregarCategoriasProdutos(); buscarProdutos();">PRODUTOS</button>
+            <button class="btn-menu" onclick="abrirTelaProdutos();">PRODUTOS</button>
             <button class="btn-menu" onclick="mostrarTela('estoqueSection'); carregarLocaisEstoque(); buscarEstoque();">ESTOQUE</button>
             <button class="btn-menu" onclick="mostrarTela('vendasSection'); buscarVendas();">VENDAS</button>
             <button class="btn-menu" onclick="mostrarTela('financeiroSection'); buscarFinanceiro();">FINANCEIRO</button>
@@ -226,12 +226,13 @@
         <div class="search-box">
             <input type="text" id="searchInput" placeholder="Digite o nome do produto..." oninput="debounceSearch('produtos')">
             <select id="categoryFilter" onchange="buscarProdutos()" title="Filtrar por categoria" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:220px;cursor:pointer;">
-                <option value="">Todas as categorias</option>
+                <option value="">Selecione uma categoria...</option>
+                <option value="all">Todas as categorias</option>
             </select>
             <button onclick="buscarProdutos()">Pesquisar</button>
         </div>
 
-        <div id="statusProdutos" class="status">Carregando produtos...</div>
+        <div id="statusProdutos" class="status">Escolha uma categoria ou digite a descrição para ver os produtos.</div>
 
         <div class="table-container">
             <table>
@@ -921,18 +922,37 @@
             if (!data.result) return;
 
             const atual = select.value;
-            select.innerHTML = '<option value="">Todas as categorias</option>' +
+            select.innerHTML = '<option value="">Selecione uma categoria...</option><option value="all">Todas as categorias</option>' +
                 data.result.map(c => `<option value="${c.id}">${c.name} (${c.count})</option>`).join('');
-            if (atual && data.result.some(c => String(c.id) === atual)) select.value = atual;
+            if (atual && (atual === 'all' || data.result.some(c => String(c.id) === atual))) select.value = atual;
         } catch (e) { /* o filtro simplesmente fica só com "Todas as categorias" */ }
     }
 
-    /* 1. BUSCAR PRODUTOS */
+    // Abre a tela de Produtos sem carregar nada: o usuário escolhe os filtros primeiro
+    function abrirTelaProdutos() {
+        mostrarTela('produtosSection');
+        document.getElementById('searchInput').value = '';
+        document.getElementById('categoryFilter').value = '';
+        carregarCategoriasProdutos();
+        buscarProdutos(); // sem filtro, só mostra a orientação
+    }
+
+    let produtosReqId = 0;
+
+    /* 1. BUSCAR PRODUTOS (só busca no Odoo quando há categoria escolhida e/ou descrição digitada) */
     async function buscarProdutos() {
         const query = document.getElementById("searchInput").value.trim();
-        const category_id = document.getElementById("categoryFilter").value;
+        const categoriaEscolhida = document.getElementById("categoryFilter").value;
+        const category_id = categoriaEscolhida === 'all' ? '' : categoriaEscolhida;
         const status = document.getElementById("statusProdutos");
         const results = document.getElementById("resultsProdutos");
+        const reqId = ++produtosReqId;
+
+        if (!query && !categoriaEscolhida) {
+            status.innerText = "Escolha uma categoria ou digite a descrição para ver os produtos.";
+            results.innerHTML = "";
+            return;
+        }
 
         status.innerText = "Pesquisando produtos...";
 
@@ -944,6 +964,7 @@
             });
 
             const data = await response.json();
+            if (reqId !== produtosReqId) return; // o usuário já mudou os filtros: ignora esta resposta
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhum produto encontrado.";
@@ -977,6 +998,7 @@
             });
             results.innerHTML = html;
         } catch (e) {
+            if (reqId !== produtosReqId) return;
             status.innerText = "Erro ao carregar produtos.";
             results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
@@ -2593,9 +2615,6 @@
 
         if (state === 'draft') {
             container.innerHTML += `<button class="btn-delete" onclick="excluirTransferencia()">Excluir</button>`;
-            if (transferHasChanges) {
-                container.innerHTML += `<button class="btn-save" onclick="salvarTransferencia()">Salvar</button>`;
-            }
             container.innerHTML += `<button class="btn-action" onclick="validarTransferencia()">Validar</button>`;
         }
     }
