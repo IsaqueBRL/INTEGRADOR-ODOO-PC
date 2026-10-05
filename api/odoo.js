@@ -65,6 +65,22 @@ const lookups = {
     internalPickingTypes: () => cached("picking_types_internal", TTL_LONG, () => execute("stock.picking.type", "search_read", [[["code", "=", "internal"]]], { fields: ["id", "name", "default_location_src_id", "default_location_dest_id"] }))
 };
 
+// Remove de um objeto os campos que não existem naquele modelo do Odoo (evita "Invalid field ..." entre versões)
+async function onlyExistingFields(model, vals) {
+    try {
+        const defs = await cached("fields_" + model, TTL_LONG, () => execute(model, "fields_get", [], { attributes: ["type"] }));
+        const out = {};
+        for (const k of Object.keys(vals)) {
+            if (vals[k] === undefined) continue;
+            if (defs && defs[k]) out[k] = vals[k];
+            else console.warn("Campo ignorado (não existe em " + model + "):", k);
+        }
+        return out;
+    } catch (e) {
+        return vals;
+    }
+}
+
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -857,14 +873,6 @@ export default async function handler(req, res) {
                 }
             }
 
-            // unidade de medida dos produtos novos: lida direto do Odoo (não depende do cache de 200 produtos)
-            const uomByProduct = {};
-            const newProductIds = [...new Set((lines || []).filter(l => !l.id && l.product_id).map(l => Number(l.product_id)))];
-            if (newProductIds.length > 0) {
-                const prods = await execute("product.product", "read", [newProductIds], { fields: ["id", "uom_id"] }).catch(() => []);
-                (prods || []).forEach(p => { if (Array.isArray(p.uom_id)) uomByProduct[p.id] = p.uom_id[0]; });
-            }
-
             const moveCommands = [];
             for (const l of (lines || [])) {
                 if (l.id && !l.product_id) {
@@ -874,11 +882,11 @@ export default async function handler(req, res) {
                 if (!l.product_id) continue;
 
                 if (l.id) {
-                    moveCommands.push([1, Number(l.id), {
+                    moveCommands.push([1, Number(l.id), await onlyExistingFields("stock.move", {
                         product_id: Number(l.product_id),
                         product_uom_qty: Number(l.qty),
                         ...moveLocUpdate
-                    }]);
+                    })]);
                 } else {
                     // OBS: stock.move não tem o campo "name" no Odoo 18 (causava "Invalid field 'name' in 'stock.move'")
                     const newMove = {
@@ -887,8 +895,8 @@ export default async function handler(req, res) {
                         location_id: writeData.location_id || (location_id ? Number(location_id) : undefined),
                         location_dest_id: writeData.location_dest_id || (location_dest_id ? Number(location_dest_id) : undefined)
                     };
-                    if (uomByProduct[Number(l.product_id)]) newMove.product_uom = uomByProduct[Number(l.product_id)];
-                    moveCommands.push([0, 0, newMove]);
+                    // a unidade de medida (product_uom) o Odoo define sozinho a partir do produto
+                    moveCommands.push([0, 0, await onlyExistingFields("stock.move", newMove)]);
                 }
             }
             if (moveCommands.length > 0) writeData.move_ids = moveCommands;
