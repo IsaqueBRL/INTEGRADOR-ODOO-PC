@@ -850,11 +850,21 @@ export default async function handler(req, res) {
             if (writeData.location_id) moveLocUpdate.location_id = writeData.location_id;
             if (writeData.location_dest_id) moveLocUpdate.location_dest_id = writeData.location_dest_id;
 
-            // Itens: atualizar/criar tudo na mesma escrita do picking (unidade de medida vem do cache de produtos)
-            let productCatalog = [];
-            if ((lines || []).some(l => !l.id && l.product_id)) {
-                productCatalog = await lookups.transferProducts().catch(() => []);
+            // Itens: atualizar/criar tudo na mesma escrita do picking
+            for (const l of (lines || [])) {
+                if (l.product_id && !(Number(l.qty) > 0)) {
+                    return res.status(400).json({ error: "A demanda de cada item deve ser maior que zero." });
+                }
             }
+
+            // unidade de medida dos produtos novos: lida direto do Odoo (não depende do cache de 200 produtos)
+            const uomByProduct = {};
+            const newProductIds = [...new Set((lines || []).filter(l => !l.id && l.product_id).map(l => Number(l.product_id)))];
+            if (newProductIds.length > 0) {
+                const prods = await execute("product.product", "read", [newProductIds], { fields: ["id", "uom_id"] }).catch(() => []);
+                (prods || []).forEach(p => { if (Array.isArray(p.uom_id)) uomByProduct[p.id] = p.uom_id[0]; });
+            }
+
             const moveCommands = [];
             for (const l of (lines || [])) {
                 if (l.id && !l.product_id) {
@@ -870,15 +880,15 @@ export default async function handler(req, res) {
                         ...moveLocUpdate
                     }]);
                 } else {
-                    const prod = productCatalog.find(p => p.id === Number(l.product_id)) || {};
-                    moveCommands.push([0, 0, {
+                    // OBS: stock.move não tem o campo "name" no Odoo 18 (causava "Invalid field 'name' in 'stock.move'")
+                    const newMove = {
                         product_id: Number(l.product_id),
                         product_uom_qty: Number(l.qty),
-                        name: prod.display_name || "Transferência Interna",
-                        product_uom: Array.isArray(prod.uom_id) ? prod.uom_id[0] : false,
                         location_id: writeData.location_id || (location_id ? Number(location_id) : undefined),
                         location_dest_id: writeData.location_dest_id || (location_dest_id ? Number(location_dest_id) : undefined)
-                    }]);
+                    };
+                    if (uomByProduct[Number(l.product_id)]) newMove.product_uom = uomByProduct[Number(l.product_id)];
+                    moveCommands.push([0, 0, newMove]);
                 }
             }
             if (moveCommands.length > 0) writeData.move_ids = moveCommands;
