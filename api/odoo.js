@@ -681,7 +681,7 @@ export default async function handler(req, res) {
             }
 
             const orders = await execute("sale.order", "search_read", [domain], {
-                fields: ["id", "name", "partner_id", "amount_total", "state", "invoice_status", "invoice_ids", "warehouse_id"],
+                fields: ["id", "name", "partner_id", "amount_total", "state", "invoice_status", "invoice_ids", "warehouse_id", "date_order"],
                 order: "id desc",
                 limit: 100
             });
