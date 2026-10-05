@@ -745,6 +745,36 @@ export default async function handler(req, res) {
             return res.status(200).json({ result: (locations || []).slice().sort((a, b) => (a.complete_name || "").localeCompare(b.complete_name || "", "pt-BR")) });
         }
 
+        // AÇÃO: PRODUTOS COM ESTOQUE EM UM LOCAL DE ORIGEM (para as linhas da transferência)
+        if (action === "get_location_products") {
+            const locId = Number(body.location_id) || 0;
+            if (!locId) return res.status(400).json({ error: "Local de origem é obrigatório." });
+
+            // estoque físico do local escolhido (e sublocais), somado por produto
+            const quants = await execute("stock.quant", "search_read", [[
+                ["location_id", "child_of", locId],
+                ["location_id.usage", "=", "internal"],
+                ["quantity", ">", 0]
+            ]], { fields: ["product_id", "quantity"], limit: 10000 });
+
+            const qtyByProduct = {};
+            (quants || []).forEach(q => {
+                if (!Array.isArray(q.product_id)) return;
+                qtyByProduct[q.product_id[0]] = (qtyByProduct[q.product_id[0]] || 0) + q.quantity;
+            });
+            const ids = Object.keys(qtyByProduct).map(Number);
+            if (ids.length === 0) return res.status(200).json({ products: [] });
+
+            // sem ordenar por display_name aqui (campo calculado, o Odoo rejeita); a ordem é feita no servidor
+            const products = await execute("product.product", "search_read", [[["id", "in", ids], ["type", "!=", "service"]]], {
+                fields: ["id", "display_name", "uom_id"]
+            });
+            const list = (products || [])
+                .map(pr => ({ ...pr, stock_qty: qtyByProduct[pr.id] }))
+                .sort((a, b) => (a.display_name || "").localeCompare(b.display_name || "", "pt-BR"));
+            return res.status(200).json({ products: list });
+        }
+
         // AÇÃO: BUSCAR TRANSFERÊNCIAS INTERNAS
         if (action === "get_transfers") {
             const query = body.query || "";
@@ -752,7 +782,7 @@ export default async function handler(req, res) {
             if (query) domain.push(["name", "ilike", query]);
 
             const result = await execute("stock.picking", "search_read", [domain], {
-                fields: ["id", "name", "location_id", "location_dest_id", "state"],
+                fields: ["id", "name", "location_id", "location_dest_id", "state", "date_done"],
                 order: "id desc",
                 limit: 100
             });
