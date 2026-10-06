@@ -573,7 +573,8 @@ export default async function handler(req, res) {
                 headerData.order_line = validLines.map(l => [0, 0, {
                     product_id: Number(l.product_id),
                     product_uom_qty: Number(l.qty),
-                    price_unit: Number(l.price)
+                    price_unit: Number(l.price),
+                    discount: Number(l.discount) || 0
                 }]);
                 orderId = await execute("sale.order", "create", [headerData]);
             } else {
@@ -586,7 +587,8 @@ export default async function handler(req, res) {
                     const lineVals = {
                         product_id: Number(l.product_id),
                         product_uom_qty: Number(l.qty),
-                        price_unit: Number(l.price)
+                        price_unit: Number(l.price),
+                        discount: Number(l.discount) || 0
                     };
                     lineCommands.push(l.id ? [1, Number(l.id), lineVals] : [0, 0, lineVals]);
                 }
@@ -819,7 +821,7 @@ export default async function handler(req, res) {
                     fields: ["id", "name", "partner_id", "payment_term_id", "order_line", "state", "amount_total", "warehouse_id", "invoice_ids", "invoice_status"]
                 }),
                 execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], {
-                    fields: ["id", "product_id", "product_uom_qty", "price_unit", "price_subtotal"]
+                    fields: ["id", "product_id", "product_uom_qty", "price_unit", "discount", "price_subtotal"]
                 }).catch(() => []),
                 lookups.paymentTerms().catch(() => []),
                 lookups.saleProducts().catch(() => []),
