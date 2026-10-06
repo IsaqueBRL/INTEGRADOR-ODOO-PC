@@ -410,6 +410,22 @@
                 <tfoot id="footFinanceiro"></tfoot>
             </table>
         </div>
+
+        <h3 style="margin: 28px 0 10px; color: var(--primary-color);">Extrato de Movimentações</h3>
+        <div id="statusExtrato" class="status">Carregando extrato...</div>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 120px;">DATA</th>
+                        <th>PARCEIRO</th>
+                        <th>DIÁRIO</th>
+                        <th style="width: 140px; text-align: right;">TOTAL</th>
+                    </tr>
+                </thead>
+                <tbody id="resultsExtrato"></tbody>
+            </table>
+        </div>
     </div>
 </div>
 
@@ -686,7 +702,7 @@
         const nativeFetch = window.fetch.bind(window);
         const TTL = 5 * 60 * 1000;
         const CACHEABLE = new Set(['get_sale_form_data', 'get_payment_journals', 'get_product_categories', 'get_locations']);
-        const LATEST_ONLY = new Set(['get_products', 'get_stock', 'get_sales', 'get_financial_accounts', 'get_transfers', 'search_partners', 'get_warehouse_products', 'get_location_products']);
+        const LATEST_ONLY = new Set(['get_products', 'get_stock', 'get_sales', 'get_financial_accounts', 'get_account_statement', 'get_transfers', 'search_partners', 'get_warehouse_products', 'get_location_products']);
         const cache = new Map();
         const inflight = new Map();
         const controllers = new Map();
@@ -1394,6 +1410,7 @@
                 alert(`Transferência ${data.name || ''} lançada com sucesso!`.replace('  ', ' '));
                 fecharModalTransferenciaContas();
                 buscarFinanceiro();
+                carregarExtratoFinanceiro();
             } else {
                 alert(data.error || 'Erro ao lançar a transferência.');
             }
@@ -1405,8 +1422,54 @@
         }
     }
 
+    // Extrato: lançamentos de diário que movimentam as contas "Banco e caixa"
+    async function carregarExtratoFinanceiro() {
+        const status = document.getElementById('statusExtrato');
+        const results = document.getElementById('resultsExtrato');
+        const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        status.innerText = 'Carregando extrato...';
+
+        try {
+            const response = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'get_account_statement' })
+            });
+            const data = await response.json();
+
+            if (!data.result || data.result.length === 0) {
+                status.innerText = 'Nenhuma movimentação encontrada.';
+                results.innerHTML = '';
+                return;
+            }
+
+            status.innerText = data.result.length >= (data.limit || 200)
+                ? `Mostrando os ${data.result.length} lançamentos mais recentes:`
+                : `${data.result.length} lançamento(s) encontrado(s):`;
+
+            results.innerHTML = data.result.map(m => {
+                const [y, mo, d] = (m.date || '').split('-');
+                const dataBr = y ? `${d}/${mo}/${y}` : '-';
+                return `
+                    <tr>
+                        <td data-sort="${esc(m.date)}">${dataBr}</td>
+                        <td>${esc(m.partner) || '-'}</td>
+                        <td>${esc(m.journal) || '-'}</td>
+                        <td style="text-align: right; font-weight: bold;">
+                            R$ ${Number(m.total).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                    </tr>`;
+            }).join('');
+        } catch (e) {
+            if (e && e.name === 'AbortError') return;
+            status.innerText = 'Erro ao carregar o extrato.';
+            results.innerHTML = '';
+        }
+    }
+
     async function buscarFinanceiro() {
         const query = document.getElementById("searchFinanceiroInput").value.trim();
+        if (!query) carregarExtratoFinanceiro();
         const status = document.getElementById("statusFinanceiro");
         const results = document.getElementById("resultsFinanceiro");
         const foot = document.getElementById("footFinanceiro");
