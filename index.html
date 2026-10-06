@@ -386,13 +386,13 @@
             <button class="btn-back" onclick="mostrarTela('homeSection')">← Voltar</button>
             <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
                 <h2>Plano de Contas / Saldo Financeiro</h2>
-                <button class="btn-action" onclick="abrirModalTransferenciaContas()">+ Transferência entre Contas</button>
             </div>
         </div>
 
-        <div class="search-box">
-            <input type="text" id="searchFinanceiroInput" placeholder="Digite o nome ou código da conta..." oninput="debounceSearch('financeiro')">
+        <div class="search-box filtros">
+            <input type="text" id="searchFinanceiroInput" style="flex: 0 1 260px; min-width: 160px;" placeholder="Nome ou código da conta..." oninput="debounceSearch('financeiro')">
             <button onclick="buscarFinanceiro()">Pesquisar</button>
+            <button onclick="abrirModalTransferenciaContas()" style="margin-left: auto;">+ Transferência entre Contas</button>
         </div>
 
         <div id="statusFinanceiro" class="status">Carregando contas financeiras...</div>
