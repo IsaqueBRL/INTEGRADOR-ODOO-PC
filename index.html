@@ -407,6 +407,7 @@
                     </tr>
                 </thead>
                 <tbody id="resultsFinanceiro"></tbody>
+                <tfoot id="footFinanceiro"></tfoot>
             </table>
         </div>
     </div>
@@ -1408,6 +1409,7 @@
         const query = document.getElementById("searchFinanceiroInput").value.trim();
         const status = document.getElementById("statusFinanceiro");
         const results = document.getElementById("resultsFinanceiro");
+        const foot = document.getElementById("footFinanceiro");
 
         status.innerText = "Pesquisando contas financeiras...";
 
@@ -1422,6 +1424,7 @@
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhuma conta encontrada.";
+                foot.innerHTML = "";
                 results.innerHTML = `<tr><td colspan="3" style="text-align: center; color: #888;">Nenhuma conta encontrada</td></tr>`;
                 return;
             }
@@ -1446,7 +1449,8 @@
             const totalCents = data.result.reduce((sum, acc) => sum + Math.round((acc.balance ?? 0) * 100), 0);
             const total = totalCents / 100;
             const totalColor = total >= 0 ? 'var(--success-color)' : 'var(--danger-color)';
-            html += `
+            // O total fica no rodapé (tfoot), fora do corpo da tabela, para não entrar na ordenação
+            foot.innerHTML = `
                 <tr style="background: #f4eef2; border-top: 2px solid var(--primary-color);">
                     <td colspan="2" style="text-align: right; font-weight: bold;">TOTAL</td>
                     <td style="text-align: right; font-weight: bold; color: ${totalColor};">
@@ -1457,6 +1461,7 @@
             results.innerHTML = html;
         } catch (e) {
             status.innerText = "Erro ao carregar dados financeiro.";
+            foot.innerHTML = "";
             results.innerHTML = `<tr><td colspan="3" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
     }
