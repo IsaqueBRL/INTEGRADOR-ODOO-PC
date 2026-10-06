@@ -412,6 +412,20 @@
         </div>
 
         <h3 style="margin: 28px 0 10px; color: var(--primary-color);">Extrato de Movimentações</h3>
+        <div class="search-box filtros">
+            <input type="text" id="extratoParceiro" placeholder="Parceiro..." oninput="debounceExtrato()">
+            <select id="extratoConta" class="filter-select" onchange="carregarExtratoFinanceiro()" title="Filtrar por conta / diário">
+                <option value="">Conta / Diário: todas</option>
+            </select>
+            <label class="filtro-campo">Período: de
+                <input type="date" id="extratoDataDe" onchange="carregarExtratoFinanceiro()" title="Data a partir de">
+            </label>
+            <label class="filtro-campo">até
+                <input type="date" id="extratoDataAte" onchange="carregarExtratoFinanceiro()" title="Data até">
+            </label>
+            <button onclick="carregarExtratoFinanceiro()">Pesquisar</button>
+            <button onclick="limparFiltrosExtrato()" style="background-color: #777;">Limpar</button>
+        </div>
         <div id="statusExtrato" class="status">Carregando extrato...</div>
         <div class="table-container">
             <table>
@@ -1422,6 +1436,20 @@
         }
     }
 
+    let extratoTimer = null;
+    function debounceExtrato() {
+        clearTimeout(extratoTimer);
+        extratoTimer = setTimeout(carregarExtratoFinanceiro, 400);
+    }
+
+    function limparFiltrosExtrato() {
+        document.getElementById('extratoParceiro').value = '';
+        document.getElementById('extratoConta').value = '';
+        document.getElementById('extratoDataDe').value = '';
+        document.getElementById('extratoDataAte').value = '';
+        carregarExtratoFinanceiro();
+    }
+
     // Extrato: lançamentos de diário que movimentam as contas "Banco e caixa"
     async function carregarExtratoFinanceiro() {
         const status = document.getElementById('statusExtrato');
@@ -1429,13 +1457,30 @@
         const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
         status.innerText = 'Carregando extrato...';
 
+        const selConta = document.getElementById('extratoConta');
+        const payload = {
+            action: 'get_account_statement',
+            partner: document.getElementById('extratoParceiro').value.trim(),
+            account_id: selConta.value,
+            date_from: document.getElementById('extratoDataDe').value,
+            date_to: document.getElementById('extratoDataAte').value
+        };
+
         try {
             const response = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'get_account_statement' })
+                body: JSON.stringify(payload)
             });
             const data = await response.json();
+
+            // Opções do filtro de conta: contas "Banco e caixa" (montadas uma vez, mantendo a escolha atual)
+            if (Array.isArray(data.accounts) && selConta.options.length <= 1 && data.accounts.length > 0) {
+                const atual = selConta.value;
+                selConta.innerHTML = '<option value="">Conta / Diário: todas</option>' +
+                    data.accounts.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+                selConta.value = atual;
+            }
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = 'Nenhuma movimentação encontrada.';
