@@ -1615,8 +1615,12 @@
 
             if (journals.length > 0) {
                 journals.forEach(j => {
-                    selectJournal.innerHTML += `<option value="${j.id}">${j.name}</option>`;
+                    selectJournal.innerHTML += j.has_journal === false
+                        ? `<option value="" disabled>${j.name} (sem diário no Odoo)</option>`
+                        : `<option value="${j.id}">${j.name}</option>`;
                 });
+                const firstUsable = journals.find(j => j.has_journal !== false);
+                if (firstUsable) selectJournal.value = String(firstUsable.id);
             } else {
                 selectJournal.innerHTML = '<option value="">Nenhuma conta/diário disponível</option>';
             }
@@ -1673,7 +1677,10 @@
                 let contentHtml = '';
 
                 if (isDraft) {
-                    let journalOptions = journals.map(j => `<option value="${j.id}" ${j.id === currentJournalId ? 'selected' : ''}>${j.name}</option>`).join('');
+                    let journalOptions = journals.filter(j => j.has_journal !== false).map(j => `<option value="${j.id}" ${j.id === currentJournalId ? 'selected' : ''}>${j.name}</option>`).join('');
+                    if (currentJournalId && !journals.some(j => j.id === currentJournalId)) {
+                        journalOptions = `<option value="${currentJournalId}" selected>${journalName}</option>` + journalOptions;
+                    }
 
                     contentHtml = `
                         <div class="payment-edit-grid">
