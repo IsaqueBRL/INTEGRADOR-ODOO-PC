@@ -376,6 +376,33 @@ export default async function handler(req, res) {
             return res.status(200).json({ result: formattedAccounts });
         }
 
+        // AÇÃO: EXTRATO (LANÇAMENTOS DE DIÁRIO) SOMENTE DAS CONTAS DO TIPO "BANCO E CAIXA"
+        if (action === "get_account_statement") {
+            const accounts = await getCashBankAccounts();
+            const accountIds = accounts.map(a => a.id);
+            if (accountIds.length === 0) return res.status(200).json({ result: [], limit: 200 });
+
+            const LIMIT = 200;
+            const moves = await execute("account.move", "search_read", [[
+                ["line_ids.account_id", "in", accountIds],
+                ["state", "=", "posted"]
+            ]], {
+                fields: ["id", "date", "name", "partner_id", "journal_id", "amount_total"],
+                order: "date desc, id desc",
+                limit: LIMIT
+            });
+
+            const result = (moves || []).map(m => ({
+                id: m.id,
+                date: m.date || "",
+                number: m.name || "",
+                partner: Array.isArray(m.partner_id) ? m.partner_id[1] : "",
+                journal: Array.isArray(m.journal_id) ? m.journal_id[1] : "",
+                total: m.amount_total || 0
+            }));
+            return res.status(200).json({ result, limit: LIMIT });
+        }
+
         // AÇÃO: DADOS DE APOIO PARA MONTAR UM NOVO PEDIDO DE VENDA (CONDIÇÕES DE PAGAMENTO, PRODUTOS, ARMAZÉNS)
         if (action === "get_sale_form_data") {
             const [paymentTerms, products, warehouses] = await Promise.all([
