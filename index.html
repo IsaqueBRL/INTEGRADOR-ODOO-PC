@@ -586,6 +586,7 @@
                         <th>PRODUTO</th>
                         <th style="width: 90px;">QTD</th>
                         <th style="width: 110px;">PREÇO UNIT.</th>
+                        <th style="width: 80px;">DESC. %</th>
                         <th>TOTAL</th>
                         <th style="width: 40px;"></th>
                     </tr>
@@ -2109,8 +2110,9 @@
             html += `
                 <tr class="line-row" data-line-id="${line.id || ''}">
                     <td><select class="line-product" ${editavel ? '' : 'disabled'} onchange="aoSelecionarProduto(this)">${options}</select></td>
-                    <td><input type="number" class="line-qty" value="${line.quantity || 1}" step="1" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
+                    <td><input type="number" class="line-qty" value="${line.product_uom_qty ?? 1}" step="any" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
                     <td><input type="number" class="line-price" value="${line.price_unit || 0}" step="0.01" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
+                    <td><input type="number" class="line-discount" value="${line.discount || 0}" step="0.01" min="0" max="100" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
                     <td class="line-subtotal" style="font-weight:bold;">R$ ${(line.price_subtotal || 0).toFixed(2)}</td>
                     <td>${editavel ? `<button class="btn-remove-line" onclick="removerLinha(this)">×</button>` : ''}</td>
                 </tr>
@@ -2142,6 +2144,7 @@
             <td><select class="line-product" onchange="aoSelecionarProduto(this)">${options}</select></td>
             <td><input type="number" class="line-qty" value="1" step="1" oninput="recalcularTotais()"></td>
             <td><input type="number" class="line-price" value="0.00" step="0.01" oninput="recalcularTotais()"></td>
+            <td><input type="number" class="line-discount" value="0" step="0.01" min="0" max="100" oninput="recalcularTotais()"></td>
             <td class="line-subtotal" style="font-weight:bold;">R$ 0.00</td>
             <td><button class="btn-remove-line" onclick="removerLinha(this)">×</button></td>
         `;
@@ -2175,7 +2178,8 @@
         document.querySelectorAll('#saleLinesBody .line-row').forEach(row => {
             const qty = parseFloat(row.querySelector('.line-qty').value) || 0;
             const price = parseFloat(row.querySelector('.line-price').value) || 0;
-            const subtotal = qty * price;
+            const disc = Math.min(100, Math.max(0, parseFloat(row.querySelector('.line-discount')?.value) || 0));
+            const subtotal = qty * price * (1 - disc / 100);
             row.querySelector('.line-subtotal').innerText = `R$ ${subtotal.toFixed(2)}`;
             totalGeral += subtotal;
         });
@@ -2224,7 +2228,8 @@
                     id: row.getAttribute('data-line-id') || null,
                     product_id: prodVal,
                     qty: row.querySelector('.line-qty').value,
-                    price: row.querySelector('.line-price').value
+                    price: row.querySelector('.line-price').value,
+                    discount: row.querySelector('.line-discount')?.value || 0
                 });
             }
         });
