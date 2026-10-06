@@ -61,7 +61,7 @@ const lookups = {
     saleProducts: () => cached("sale_products", TTL_PRODUCTS, () => execute("product.product", "search_read", [[["sale_ok", "=", true]]], { fields: ["id", "display_name", "list_price"] })),
     locations: () => cached("locations", TTL_LONG, () => execute("stock.location", "search_read", [[["usage", "=", "internal"]]], { fields: ["id", "complete_name"], limit: 200 })),
     transferProducts: () => cached("transfer_products", TTL_PRODUCTS, () => execute("product.product", "search_read", [[["type", "!=", "service"]]], { fields: ["id", "display_name", "uom_id"], limit: 200 })),
-    journals: () => cached("journals", TTL_LONG, () => execute("account.journal", "search_read", [[["type", "in", ["bank", "cash"]]]], { fields: ["id", "name", "type"] })),
+    journals: () => cached("journals", TTL_LONG, () => execute("account.journal", "search_read", [[["type", "in", ["bank", "cash"]]]], { fields: ["id", "name", "type", "default_account_id"] })),
     internalPickingTypes: () => cached("picking_types_internal", TTL_LONG, () => execute("stock.picking.type", "search_read", [[["code", "=", "internal"]]], { fields: ["id", "name", "default_location_src_id", "default_location_dest_id"] }))
 };
 
@@ -73,6 +73,21 @@ async function getCashBankAccounts() {
         limit: 200
     });
     return accounts || [];
+}
+
+// Contas para pagamento de fatura: SOMENTE contas do tipo "Banco e caixa" (plano de contas).
+// O Odoo registra o pagamento por diário, então cada conta é ligada ao diário que a usa como conta padrão.
+async function getPaymentAccounts() {
+    const [accounts, journals] = await Promise.all([getCashBankAccounts(), lookups.journals()]);
+    const journalByAccount = {};
+    (journals || []).forEach(j => {
+        const accId = Array.isArray(j.default_account_id) ? j.default_account_id[0] : j.default_account_id;
+        if (accId && !journalByAccount[accId]) journalByAccount[accId] = j;
+    });
+    return accounts.map(a => {
+        const j = journalByAccount[a.id];
+        return { id: j ? j.id : null, account_id: a.id, code: a.code, name: a.name, has_journal: !!j };
+    });
 }
 
 // Diário "Transferências" (código TRF)
@@ -275,8 +290,8 @@ export default async function handler(req, res) {
 
         // AÇÃO: BUSCAR DIÁRIOS / CONTAS DE PAGAMENTO (BANCO/CAIXA)
         if (action === "get_payment_journals") {
-            const journals = await lookups.journals();
-            return res.status(200).json({ result: journals || [] });
+            const accounts = await getPaymentAccounts();
+            return res.status(200).json({ result: accounts });
         }
 
         // AÇÃO: REGISTRAR PAGAMENTO DA FATURA
@@ -284,6 +299,12 @@ export default async function handler(req, res) {
             const { order_id, journal_id, amount, payment_date } = body;
             if (!order_id || !journal_id || !amount) {
                 return res.status(400).json({ error: "Campos obrigatórios não informados." });
+            }
+
+            // Só aceita contas do tipo "Banco e caixa"
+            const allowedAccounts = await getPaymentAccounts();
+            if (!allowedAccounts.some(a => a.has_journal && a.id === Number(journal_id))) {
+                return res.status(400).json({ error: "Conta inválida: só são permitidas contas do tipo Banco e caixa." });
             }
 
             const wizardId = await execute("account.payment.register", "create", [{
