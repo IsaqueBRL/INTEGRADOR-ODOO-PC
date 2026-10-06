@@ -376,17 +376,37 @@ export default async function handler(req, res) {
             return res.status(200).json({ result: formattedAccounts });
         }
 
-        // AÇÃO: EXTRATO (LANÇAMENTOS DE DIÁRIO) SOMENTE DAS CONTAS DO TIPO "BANCO E CAIXA"
+        // AÇÃO: EXTRATO (LANÇAMENTOS DE DIÁRIO) SOMENTE DAS CONTAS "BANCO E CAIXA"
+        // Filtros opcionais: date_from / date_to (AAAA-MM-DD), partner (texto), account_id
         if (action === "get_account_statement") {
             const accounts = await getCashBankAccounts();
             const accountIds = accounts.map(a => a.id);
-            if (accountIds.length === 0) return res.status(200).json({ result: [], limit: 200 });
+            const accountsOut = accounts.map(a => ({ id: a.id, code: a.code, name: a.name }));
+            if (accountIds.length === 0) return res.status(200).json({ result: [], accounts: [], limit: 200 });
 
             const LIMIT = 200;
-            const moves = await execute("account.move", "search_read", [[
-                ["line_ids.account_id", "in", accountIds],
-                ["state", "=", "posted"]
-            ]], {
+            const chosen = Number(body.account_id);
+            const scopeIds = chosen && accountIds.includes(chosen) ? [chosen] : accountIds;
+
+            const domain = [
+                ["state", "=", "posted"],
+                ["line_ids.account_id", "in", scopeIds]
+            ];
+
+            // Só diários de banco/caixa (+ o diário "Transferências" usado nas transferências entre contas);
+            // lançamentos de "Operações diversas" (saldo inicial etc.) ficam de fora
+            const trfJournal = await getTransferJournal().catch(() => null);
+            if (trfJournal) {
+                domain.push("|", ["journal_id.type", "in", ["bank", "cash"]], ["journal_id", "=", trfJournal.id]);
+            } else {
+                domain.push(["journal_id.type", "in", ["bank", "cash"]]);
+            }
+
+            if (body.date_from) domain.push(["date", ">=", body.date_from]);
+            if (body.date_to) domain.push(["date", "<=", body.date_to]);
+            if (body.partner) domain.push(["partner_id.name", "ilike", String(body.partner)]);
+
+            const moves = await execute("account.move", "search_read", [domain], {
                 fields: ["id", "date", "name", "partner_id", "journal_id", "amount_total"],
                 order: "date desc, id desc",
                 limit: LIMIT
@@ -400,7 +420,7 @@ export default async function handler(req, res) {
                 journal: Array.isArray(m.journal_id) ? m.journal_id[1] : "",
                 total: m.amount_total || 0
             }));
-            return res.status(200).json({ result, limit: LIMIT });
+            return res.status(200).json({ result, accounts: accountsOut, limit: LIMIT });
         }
 
         // AÇÃO: DADOS DE APOIO PARA MONTAR UM NOVO PEDIDO DE VENDA (CONDIÇÕES DE PAGAMENTO, PRODUTOS, ARMAZÉNS)
