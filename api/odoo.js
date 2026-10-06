@@ -342,16 +342,9 @@ export default async function handler(req, res) {
 
             let accounts = await execute("account.account", "search_read", [domain], {
                 fields: ["id", "code", "name", "account_type", "current_balance"],
-                limit: 100
+                limit: 100,
+                order: "code asc"
             });
-
-            if (!accounts || accounts.length === 0) {
-                const altDomain = query ? ['|', ['name', 'ilike', query], ['code', 'ilike', query]] : [];
-                accounts = await execute("account.account", "search_read", [altDomain], {
-                    fields: ["id", "code", "name", "account_type", "current_balance"],
-                    limit: 100
-                });
-            }
 
             // Uma única consulta agrupada traz o saldo de todas as contas de uma vez
             const balanceById = {};
@@ -370,7 +363,7 @@ export default async function handler(req, res) {
                 } catch (e) {}
             }
 
-            // Só contas com saldo: remove as zeradas (arredonda em centavos para ignorar resíduo de ponto flutuante)
+            // Todas as contas do tipo "Banco e caixa", mesmo com saldo zerado
             const formattedAccounts = (accounts || [])
                 .map(acc => ({
                     id: acc.id,
@@ -378,8 +371,7 @@ export default async function handler(req, res) {
                     name: acc.name || "-",
                     type: acc.account_type || "-",
                     balance: balanceById[acc.id] ?? acc.current_balance ?? 0
-                }))
-                .filter(acc => Math.round(Number(acc.balance) * 100) !== 0);
+                }));
 
             return res.status(200).json({ result: formattedAccounts });
         }
