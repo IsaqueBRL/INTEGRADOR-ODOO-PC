@@ -201,7 +201,7 @@ export default async function handler(req, res) {
 
             const pickings = await execute("stock.picking", "search_read", [[
                 ["sale_id", "=", oid], ["state", "=", "done"], ["picking_type_code", "=", "outgoing"]
-            ]], { fields: ["id", "name", "location_id"] });
+            ]], { fields: ["id", "name", "location_id", "location_dest_id", "picking_type_id", "partner_id", "group_id"] });
 
             for (const p of (pickings || [])) {
                 try {
@@ -235,45 +235,59 @@ export default async function handler(req, res) {
                     });
                     if (!temAlgoParaDevolver) continue;
 
-                    // 3) assistente de devolução do Odoo (botão "Devolução" da entrega)
-                    const ctx = { active_id: p.id, active_ids: [p.id], active_model: "stock.picking" };
-                    const wizardId = await execute("stock.return.picking", "create", [{ picking_id: p.id }], { context: ctx });
+                    // 3) cria o recebimento de devolução (o que o botão "Devolução" faz no Odoo).
+                    // Nesta versão do Odoo o assistente "stock.return.picking" não existe mais:
+                    // o botão cria direto um recebimento em rascunho, e é isso que fazemos aqui,
+                    // já com a "Demanda" igual à quantidade que saiu no pedido.
+                    const origemId = Array.isArray(p.location_id) ? p.location_id[0] : p.location_id;      // estoque de onde saiu
+                    const clienteLocId = Array.isArray(p.location_dest_id) ? p.location_dest_id[0] : p.location_dest_id;
+                    const tipoOrigemId = Array.isArray(p.picking_type_id) ? p.picking_type_id[0] : p.picking_type_id;
 
-                    // o item deve voltar para o local de onde saiu
+                    // tipo de operação de devolução ("Recebimentos") definido no tipo da entrega
+                    let tipoDevolucaoId = null;
                     try {
-                        const w = await execute("stock.return.picking", "read", [[wizardId]], { fields: ["location_id"], context: ctx });
-                        const origemId = Array.isArray(p.location_id) ? p.location_id[0] : null;
-                        const destinoAtual = w && w[0] && Array.isArray(w[0].location_id) ? w[0].location_id[0] : null;
-                        if (origemId && destinoAtual !== origemId) {
-                            await execute("stock.return.picking", "write", [[wizardId], { location_id: origemId }], { context: ctx });
+                        const tp = await execute("stock.picking.type", "read", [[tipoOrigemId]], { fields: ["return_picking_type_id", "warehouse_id"] });
+                        if (tp && tp[0] && Array.isArray(tp[0].return_picking_type_id)) tipoDevolucaoId = tp[0].return_picking_type_id[0];
+                        if (!tipoDevolucaoId && tp && tp[0] && Array.isArray(tp[0].warehouse_id)) {
+                            const incoming = await execute("stock.picking.type", "search_read", [[["code", "=", "incoming"], ["warehouse_id", "=", tp[0].warehouse_id[0]]]], { fields: ["id"], limit: 1 });
+                            if (incoming && incoming[0]) tipoDevolucaoId = incoming[0].id;
                         }
-                    } catch (e) { /* mantém o local sugerido pelo Odoo */ }
+                    } catch (e) { /* tratado logo abaixo */ }
+                    if (!tipoDevolucaoId) throw new Error("não foi encontrado o tipo de operação de devolução (Recebimentos) deste local");
 
-                    // quantidade a devolver em cada linha = o que saiu menos o que já voltou
-                    let wLines = await execute("stock.return.picking.line", "search_read", [[["wizard_id", "=", wizardId]]], { fields: ["id", "move_id", "product_id", "quantity"], context: ctx });
-                    if (!wLines || wLines.length === 0) {
-                        for (const m of moves) {
-                            if (restante[m.id] > 0) {
-                                await execute("stock.return.picking.line", "create", [{ wizard_id: wizardId, move_id: m.id, quantity: restante[m.id] }], { context: ctx });
-                            }
-                        }
-                    } else {
-                        for (const l of wLines) {
-                            const mid = Array.isArray(l.move_id) ? l.move_id[0] : l.move_id;
-                            const qtd = restante[mid] || 0;
-                            if (Number(l.quantity) !== qtd) {
-                                await execute("stock.return.picking.line", "write", [[l.id], { quantity: qtd }], { context: ctx });
-                            }
-                        }
+                    // linhas originais completas (para copiar produto e unidade de medida)
+                    const movesCompletos = await execute("stock.move", "read", [moveIds]);
+                    const moveCommands = [];
+                    for (const mv of movesCompletos) {
+                        const qtd = restante[mv.id] || 0;
+                        if (qtd <= 0) continue;
+                        const uom = Array.isArray(mv.product_uom) ? mv.product_uom[0] : (Array.isArray(mv.uom_id) ? mv.uom_id[0] : null);
+                        const vals = await onlyExistingFields("stock.move", {
+                            product_id: Array.isArray(mv.product_id) ? mv.product_id[0] : mv.product_id,
+                            product_uom_qty: qtd,
+                            product_uom: uom,
+                            uom_id: uom,
+                            location_id: clienteLocId,
+                            location_dest_id: origemId,
+                            origin_returned_move_id: mv.id,
+                            picking_type_id: tipoDevolucaoId,
+                            origin: "Devolução de " + p.name
+                        });
+                        moveCommands.push([0, 0, vals]);
                     }
 
-                    const resultado = await execute("stock.return.picking", "action_create_returns", [[wizardId]], { context: ctx });
-                    let novoId = resultado && resultado.res_id ? Number(resultado.res_id) : null;
-                    if (!novoId) {
-                        const mv = await execute("stock.move", "search_read", [[["origin_returned_move_id", "in", moveIds], ["state", "!=", "cancel"]]], { fields: ["picking_id"], order: "id desc", limit: 1 });
-                        if (mv && mv[0] && Array.isArray(mv[0].picking_id)) novoId = mv[0].picking_id[0];
-                    }
-                    if (!novoId) throw new Error("o Odoo não informou qual recebimento de devolução foi criado");
+                    const pickingVals = await onlyExistingFields("stock.picking", {
+                        picking_type_id: tipoDevolucaoId,
+                        partner_id: Array.isArray(p.partner_id) ? p.partner_id[0] : false,
+                        origin: "Devolução de " + p.name,
+                        location_id: clienteLocId,
+                        location_dest_id: origemId,
+                        group_id: Array.isArray(p.group_id) ? p.group_id[0] : false,
+                        return_id: p.id,
+                        move_ids: moveCommands
+                    });
+                    const novoId = await execute("stock.picking", "create", [pickingVals]);
+                    if (!novoId) throw new Error("o Odoo não criou o recebimento de devolução");
 
                     // 4) validar o recebimento (botão "Validar" do Odoo), com a quantidade devolvida
                     let info = await execute("stock.picking", "read", [[novoId]], { fields: ["name", "state"] });
