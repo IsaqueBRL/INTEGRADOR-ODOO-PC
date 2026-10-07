@@ -191,6 +191,13 @@ export default async function handler(req, res) {
             return idsDepois.filter(id => !idsAntes.includes(id));
         };
 
+        // Coloca a data de vencimento escolhida na tela no campo "Data de vencimento" da fatura.
+        // A fatura é criada sem condição de pagamento, então esse campo fica livre para receber a data.
+        const aplicarVencimentoNaFatura = async (invoiceId, dueDate) => {
+            if (!invoiceId || !dueDate) return;
+            await execute("account.move", "write", [[Number(invoiceId)], { invoice_date_due: dueDate }]);
+        };
+
         // Devolve ao estoque de origem os itens de todas as entregas JÁ CONCLUÍDAS de um pedido
         // (mesmo processo manual do Odoo: entrega > "Devolução" > criar devolução > "Validar" o recebimento).
         // Só devolve o que ainda não foi devolvido, então chamar de novo não duplica a devolução.
@@ -708,7 +715,7 @@ export default async function handler(req, res) {
 
         // AÇÃO: CRIAR/ATUALIZAR PEDIDO DE VENDA (E, OPCIONALMENTE, CONFIRMAR + BAIXAR ESTOQUE + FATURAR)
         if (action === "save_sale_order") {
-            const { order_id, partner_id, payment_term_id, warehouse_id, lines, confirm, removed_line_ids } = body;
+            const { order_id, partner_id, due_date, warehouse_id, lines, confirm, removed_line_ids } = body;
 
             if (!partner_id) return res.status(400).json({ error: "Selecione um cliente para o pedido." });
             const validLines = (lines || []).filter(l => l.product_id);
@@ -718,7 +725,11 @@ export default async function handler(req, res) {
 
             const headerData = {
                 partner_id: Number(partner_id),
-                payment_term_id: payment_term_id ? Number(payment_term_id) : false
+                // "Condição de pagamento" fica sempre em branco no Odoo; o que vale é o vencimento
+                payment_term_id: false,
+                // O vencimento escolhido fica guardado no campo "Expiração" do pedido (validity_date)
+                // até a fatura ser criada, quando ele é copiado para a "Data de vencimento" da fatura
+                validity_date: due_date || false
             };
             if (warehouse_id) headerData.warehouse_id = Number(warehouse_id);
 
@@ -788,10 +799,17 @@ export default async function handler(req, res) {
                 // Gera a fatura em rascunho (equivalente a escolher "Fatura normal" e "Criar Rascunho" no Odoo).
                 // A fatura NÃO é lançada automaticamente - isso é feito depois, na tela de revisão da fatura.
                 try {
+                    // garante que o pedido siga sem condição de pagamento (o Odoo pode preencher pelo cliente)
+                    await execute("sale.order", "write", [[orderId], { payment_term_id: false }]).catch(() => {});
                     const invoiceIds = await criarFaturasDoPedido(orderId);
                     if (invoiceIds && invoiceIds.length > 0) {
                         invoiceId = invoiceIds[0];
                         await applyForcedAccountToInvoice(invoiceId);
+                        try {
+                            await aplicarVencimentoNaFatura(invoiceId, due_date);
+                        } catch (e) {
+                            warnings.push("Fatura criada, mas não foi possível definir a data de vencimento: " + e.message);
+                        }
                     } else {
                         warnings.push("Pedido confirmado, mas ainda não havia nada a faturar. Use o botão \"Gerar Fatura\" no pedido depois de confirmar a entrega.");
                     }
@@ -815,6 +833,10 @@ export default async function handler(req, res) {
                     return res.status(400).json({ error: "Não foi possível gerar a fatura para este pedido." + diag });
                 }
                 await applyForcedAccountToInvoice(invoiceIds[0]);
+                try {
+                    const ped = await execute("sale.order", "read", [[Number(order_id)]], { fields: ["validity_date"] });
+                    await aplicarVencimentoNaFatura(invoiceIds[0], ped && ped[0] && ped[0].validity_date);
+                } catch (e) { /* o vencimento pode ser ajustado na fatura */ }
                 return res.status(200).json({ success: true, invoice_id: invoiceIds[0] });
             } catch (e) {
                 const diag = await diagnosticarPedidoSemFatura(order_id);
@@ -971,7 +993,7 @@ export default async function handler(req, res) {
             // Listas de apoio vêm do cache; a lista de parceiros foi removida (o site não a usa aqui).
             const [orders, lines, paymentTerms, products, warehouses] = await Promise.all([
                 execute("sale.order", "search_read", [[["id", "=", oid]]], {
-                    fields: ["id", "name", "partner_id", "payment_term_id", "order_line", "state", "amount_total", "warehouse_id", "invoice_ids", "invoice_status"]
+                    fields: ["id", "name", "partner_id", "payment_term_id", "order_line", "state", "amount_total", "warehouse_id", "invoice_ids", "invoice_status", "validity_date"]
                 }),
                 execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], {
                     fields: ["id", "product_id", "product_uom_qty", "price_unit", "discount", "price_subtotal"]
@@ -984,7 +1006,7 @@ export default async function handler(req, res) {
 
             const order = orders[0];
             const invoices = (order.invoice_ids && order.invoice_ids.length > 0)
-                ? await execute("account.move", "search_read", [[["id", "in", order.invoice_ids]]], { fields: ["id", "name", "state", "payment_state", "amount_total"] }).catch(() => [])
+                ? await execute("account.move", "search_read", [[["id", "in", order.invoice_ids]]], { fields: ["id", "name", "state", "payment_state", "amount_total", "invoice_date_due"] }).catch(() => [])
                 : [];
 
             return res.status(200).json({ order, lines: lines || [], payment_terms: paymentTerms || [], products: products || [], warehouses: warehouses || [], invoices: invoices || [] });
