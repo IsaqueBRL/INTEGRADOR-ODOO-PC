@@ -570,11 +570,11 @@
             </div>
             <div style="flex: 1.5 1 0; min-width: 150px;">
                 <label>Lançamento</label>
-                <input type="datetime-local" id="saleOrderDate">
+                <input type="date" id="saleOrderDate" onchange="verificarAlteracoesDatas()">
             </div>
             <div style="flex: 1.1 1 0; min-width: 150px;">
                 <label>Vencimento</label>
-                <input type="date" id="saleDueDate">
+                <input type="date" id="saleDueDate" onchange="verificarAlteracoesDatas()">
             </div>
             <div style="flex: 1.3 1 0; min-width: 150px;">
                 <label>Local de Estoque (Armazém) *</label>
@@ -1655,7 +1655,8 @@
         dueInput.value = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
         dueInput.disabled = false;
         const orderDateInput = document.getElementById('saleOrderDate');
-        orderDateInput.value = utcParaInputLocal(null);
+        orderDateInput.value = hojeISO();
+        originalOrderDateUtc = null;
         orderDateInput.disabled = false;
 
         try {
@@ -1734,7 +1735,9 @@
             const dueInput = document.getElementById('saleDueDate');
             dueInput.value = (invoice && invoice.invoice_date_due) ? invoice.invoice_date_due : (order.validity_date || '');
             const orderDateInput = document.getElementById('saleOrderDate');
-            orderDateInput.value = utcParaInputLocal(order.date_order);
+            orderDateInput.value = utcParaInputLocal(order.date_order).slice(0, 10);
+            originalOrderDateUtc = order.date_order || null;
+            datasIniciais = { order: orderDateInput.value, due: dueInput.value };
 
             const selectWh = document.getElementById('saleWarehouse');
             selectWh.innerHTML = '';
@@ -2254,7 +2257,7 @@
         if (state === 'cancel') {
             container.innerHTML += `<button class="btn-action" style="background-color: var(--warning-color);" onclick="reabrirComoOrcamento()">Reabrir como Orçamento</button>`;
         } else if (state === 'sale' || state === 'done') {
-            container.innerHTML += `<button class="btn-save" onclick="salvarDatasPedido()">Salvar Datas</button>`;
+            container.innerHTML += `<button class="btn-save" id="btnSalvarAlteracoes" style="display: none;" onclick="salvarDatasPedido()">Salvar Alterações</button>`;
             if (invoice) {
                 if (invoice.state === 'draft') {
                     container.innerHTML += `<button class="btn-action" style="background-color: var(--primary-color);" onclick="abrirModalFaturaDetalhe(${invoice.id})">Editar Fatura</button>`;
@@ -2420,7 +2423,7 @@
                     action: 'update_sale_dates',
                     order_id: currentOrderId,
                     due_date: document.getElementById('saleDueDate').value,
-                    order_date: inputLocalParaUtc(document.getElementById('saleOrderDate').value)
+                    order_date: orderDateParaEnvio()
                 })
             });
             const data = await res.json();
@@ -2450,7 +2453,7 @@
                     order_id: currentOrderId,
                     partner_id: document.getElementById('saleCustomerId').value,
                     due_date: document.getElementById('saleDueDate').value,
-                    order_date: inputLocalParaUtc(document.getElementById('saleOrderDate').value),
+                    order_date: orderDateParaEnvio(),
                     warehouse_id: document.getElementById('saleWarehouse').value,
                     lines: coletarLinhasDoFormulario(),
                     removed_line_ids: linesToRemove,
@@ -2483,7 +2486,7 @@
                     order_id: currentOrderId,
                     partner_id: document.getElementById('saleCustomerId').value,
                     due_date: document.getElementById('saleDueDate').value,
-                    order_date: inputLocalParaUtc(document.getElementById('saleOrderDate').value),
+                    order_date: orderDateParaEnvio(),
                     warehouse_id: document.getElementById('saleWarehouse').value,
                     lines: coletarLinhasDoFormulario(),
                     removed_line_ids: linesToRemove,
@@ -2741,6 +2744,29 @@
     }
 
     // Odoo devolve datas em UTC ("YYYY-MM-DD HH:MM:SS"); mostra no horário local, ex.: 18/09/2026 14:40
+    // "Lançamento" só mostra a data. Para o Odoo (que guarda data e hora), mantém a hora original do pedido;
+    // se a data não mudou, devolve o valor original sem alterar nada.
+    let originalOrderDateUtc = null;
+    let datasIniciais = { order: '', due: '' };
+    function orderDateParaEnvio() {
+        const dia = document.getElementById('saleOrderDate').value;
+        if (!dia) return '';
+        const base = originalOrderDateUtc ? new Date(String(originalOrderDateUtc).replace(' ', 'T') + 'Z') : new Date();
+        const p = n => String(n).padStart(2, '0');
+        const diaBase = `${base.getFullYear()}-${p(base.getMonth() + 1)}-${p(base.getDate())}`;
+        if (originalOrderDateUtc && dia === diaBase) return originalOrderDateUtc;
+        return inputLocalParaUtc(`${dia}T${p(base.getHours())}:${p(base.getMinutes())}`);
+    }
+
+    // Mostra "Salvar Alterações" só quando Lançamento ou Vencimento foram alterados
+    function verificarAlteracoesDatas() {
+        const btn = document.getElementById('btnSalvarAlteracoes');
+        if (!btn) return;
+        const mudou = document.getElementById('saleOrderDate').value !== datasIniciais.order
+            || document.getElementById('saleDueDate').value !== datasIniciais.due;
+        btn.style.display = mudou ? 'inline-block' : 'none';
+    }
+
     // Data de hoje (fuso do usuário) no formato AAAA-MM-DD
     function hojeISO() {
         const d = new Date();
