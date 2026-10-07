@@ -890,7 +890,7 @@ export default async function handler(req, res) {
 
             const [invoices, lines] = await Promise.all([
                 execute("account.move", "search_read", [[["id", "=", Number(invoice_id)]]], {
-                    fields: ["id", "name", "partner_id", "invoice_payment_term_id", "invoice_date", "state", "payment_state", "amount_total", "invoice_line_ids"]
+                    fields: ["id", "name", "partner_id", "invoice_payment_term_id", "invoice_date", "invoice_date_due", "state", "payment_state", "amount_total", "invoice_line_ids"]
                 }),
                 execute("account.move.line", "search_read", [[["move_id", "=", Number(invoice_id)], ["display_type", "=", "product"]]], {
                     fields: ["id", "product_id", "quantity", "discount", "price_unit", "price_subtotal", "price_total"]
@@ -904,11 +904,12 @@ export default async function handler(req, res) {
 
         // AÇÃO: ATUALIZAR DATA/DESCONTO DA FATURA (SOMENTE ENQUANTO ELA ESTIVER EM RASCUNHO)
         if (action === "update_invoice_detail") {
-            const { invoice_id, invoice_date, lines } = body;
+            const { invoice_id, invoice_date, due_date, lines } = body;
             if (!invoice_id) return res.status(400).json({ error: "ID da fatura é obrigatório." });
 
             const moveVals = {};
             if (invoice_date) moveVals.invoice_date = invoice_date;
+            if (due_date) moveVals.invoice_date_due = due_date;
             const discountCommands = (lines || []).filter(l => l.id).map(l => [1, Number(l.id), { discount: Number(l.discount) || 0 }]);
             if (discountCommands.length > 0) moveVals.invoice_line_ids = discountCommands;
             if (Object.keys(moveVals).length > 0) {
