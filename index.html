@@ -1713,7 +1713,7 @@
             availableProducts = data.products || [];
             availableWarehouses = data.warehouses || [];
 
-            const invoice = (data.invoices && data.invoices.length > 0) ? data.invoices[0] : null;
+            const invoice = (data.invoices && data.invoices.length > 0) ? (data.invoices.find(i => i.state !== 'cancel') || data.invoices[0]) : null;
             currentInvoiceId = invoice ? invoice.id : null;
             if (invoice && invoice.amount_total) currentOrderTotal = invoice.amount_total;
 
@@ -1789,6 +1789,11 @@
     }
 
     async function abrirModalPagamento() {
+        const btnSalvar = document.getElementById('btnSalvarAlteracoes');
+        if (btnSalvar && btnSalvar.style.display !== 'none') {
+            alert('Há alterações no pedido que ainda não foram salvas. Clique em "Salvar Alterações" antes de pagar, para a fatura refletir o pedido.');
+            return;
+        }
         try {
             const journals = await carregarDiarios();
             const selectJournal = document.getElementById('payJournalSelect');
@@ -2034,7 +2039,8 @@
                     order_id: currentInvoiceId,
                     journal_id,
                     amount,
-                    payment_date
+                    payment_date,
+                    invoice_date: hojeISO()
                 })
             });
 
@@ -2047,6 +2053,7 @@
                 buscarVendas();
             } else {
                 alert(data.error || 'Erro ao registrar pagamento.');
+                abrirDetalhesVenda(currentOrderId);
             }
         } catch (e) {
             alert('Erro ao conectar com a API do Odoo.');
@@ -2268,7 +2275,8 @@
             container.innerHTML += `<button class="btn-save" id="btnSalvarAlteracoes" style="display: none;" onclick="salvarAlteracoesPedido()">Salvar Alterações</button>`;
             if (invoice) {
                 if (invoice.state === 'draft') {
-                    container.innerHTML += `<button class="btn-action" style="background-color: var(--primary-color);" onclick="abrirModalFaturaDetalhe(${invoice.id})">Editar Fatura</button>`;
+                    // fatura continua Provisória; só é lançada quando o pagamento for confirmado
+                    container.innerHTML += `<button class="btn-action" style="background-color: var(--primary-color);" onclick="abrirModalPagamento()">Pagar</button>`;
                 } else if (isPaid) {
                     container.innerHTML += `<button class="btn-action" style="background-color: var(--edit-color);" onclick="abrirModalPagamentosEntrada()">Pagamentos</button>`;
                 } else {
@@ -2411,9 +2419,8 @@
             });
             const data = await res.json();
             if (data.success) {
-                fecharSaleModal();
                 buscarVendas();
-                abrirModalFaturaDetalhe(data.invoice_id);
+                abrirDetalhesVenda(currentOrderId);
             } else {
                 alert(data.error || 'Erro ao gerar a fatura do pedido.');
             }
@@ -2524,7 +2531,7 @@
                 if (data.warnings && data.warnings.length > 0) {
                     alert('Pedido confirmado, mas com avisos:\n\n- ' + data.warnings.join('\n- '));
                 }
-                abrirModalFaturaDetalhe(data.invoice_id);
+                abrirDetalhesVenda(data.id);
             } else if (data.warnings && data.warnings.length > 0) {
                 alert('Pedido confirmado, mas com avisos:\n\n- ' + data.warnings.join('\n- '));
             } else {
@@ -2592,8 +2599,7 @@
             const actions = document.getElementById('invoiceModalActions');
             actions.innerHTML = `<button class="btn-cancel" onclick="fecharModalFaturaDetalhe()">Fechar</button>`;
             if (isEditable) {
-                actions.innerHTML += `<button class="btn-save" onclick="salvarFatura()">Salvar</button>`;
-                actions.innerHTML += `<button class="btn-action" onclick="confirmarFatura()">Confirmar Fatura</button>`;
+                actions.innerHTML += `<button class="btn-action" onclick="abrirModalPagamento()">Pagar</button>`;
             } else if (isPaid) {
                 actions.innerHTML += `<button class="btn-action" style="background-color: var(--edit-color);" onclick="abrirModalPagamentosEntrada()">Pagamentos</button>`;
             } else if (invoice.state === 'posted') {
