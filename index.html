@@ -553,7 +553,7 @@
 
 <!-- Modal: Detalhes / Editar Fatura -->
 <div class="modal-overlay" id="saleModal">
-    <div class="modal" style="max-width: 750px;">
+    <div class="modal" style="max-width: 900px;">
         <div id="ribbonPagoBadge" class="ribbon-pago" style="display: none;">PAGO</div>
 
         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -562,21 +562,21 @@
         </div>
         
         <div style="display: flex; gap: 12px; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 220px;" class="partner-search-container">
+            <div style="flex: 1.3 1 0; min-width: 150px;" class="partner-search-container">
                 <label>Cliente</label>
                 <input type="text" id="saleCustomerInput" placeholder="Buscar ou criar cliente..." oninput="buscarParceiroOdoo(this.value)" autocomplete="off">
                 <input type="hidden" id="saleCustomerId">
                 <div id="partnerDropdown" class="partner-dropdown"></div>
             </div>
-            <div style="flex: 1; min-width: 190px;">
+            <div style="flex: 1.5 1 0; min-width: 150px;">
                 <label>Lançamento</label>
                 <input type="datetime-local" id="saleOrderDate">
             </div>
-            <div style="flex: 1; min-width: 160px;">
+            <div style="flex: 1.1 1 0; min-width: 150px;">
                 <label>Vencimento</label>
                 <input type="date" id="saleDueDate">
             </div>
-            <div style="flex: 1; min-width: 200px;">
+            <div style="flex: 1.3 1 0; min-width: 150px;">
                 <label>Local de Estoque (Armazém) *</label>
                 <select id="saleWarehouse" onchange="aoTrocarArmazem()"></select>
             </div>
@@ -630,8 +630,8 @@
                 <input type="date" id="invoiceDateInput">
             </div>
             <div style="flex: 1; min-width: 180px;">
-                <label>Condição de Pagamento</label>
-                <input type="text" id="invoicePaymentTermInput" disabled>
+                <label>Vencimento</label>
+                <input type="date" id="invoiceDueDateInput">
             </div>
         </div>
 
@@ -2559,11 +2559,14 @@
             badge.className = `status-badge ${statusMeta.cls}`;
 
             document.getElementById('invoiceCustomerInput').value = Array.isArray(invoice.partner_id) ? invoice.partner_id[1] : '';
-            document.getElementById('invoicePaymentTermInput').value = Array.isArray(invoice.invoice_payment_term_id) ? invoice.invoice_payment_term_id[1] : '';
+            const dueInput = document.getElementById('invoiceDueDateInput');
+            dueInput.value = invoice.invoice_date_due || '';
+            dueInput.disabled = !isEditable;
 
+            // Data da fatura: enquanto a fatura está em rascunho, é sempre o dia de hoje (não editável)
             const dateInput = document.getElementById('invoiceDateInput');
-            dateInput.value = invoice.invoice_date || '';
-            dateInput.disabled = !isEditable;
+            dateInput.value = isEditable ? hojeISO() : (invoice.invoice_date || '');
+            dateInput.disabled = true;
 
             renderInvoiceLines(data.lines || [], isEditable);
 
@@ -2642,6 +2645,7 @@
                     action: 'update_invoice_detail',
                     invoice_id: currentInvoiceId,
                     invoice_date: document.getElementById('invoiceDateInput').value,
+                    due_date: document.getElementById('invoiceDueDateInput').value,
                     lines: coletarDescontosFatura()
                 })
             });
@@ -2667,6 +2671,7 @@
                     action: 'update_invoice_detail',
                     invoice_id: currentInvoiceId,
                     invoice_date: document.getElementById('invoiceDateInput').value,
+                    due_date: document.getElementById('invoiceDueDateInput').value,
                     lines: coletarDescontosFatura()
                 })
             });
@@ -2736,6 +2741,13 @@
     }
 
     // Odoo devolve datas em UTC ("YYYY-MM-DD HH:MM:SS"); mostra no horário local, ex.: 18/09/2026 14:40
+    // Data de hoje (fuso do usuário) no formato AAAA-MM-DD
+    function hojeISO() {
+        const d = new Date();
+        const p = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+    }
+
     // "Lançamento" (data do pedido): converte entre o horário do Odoo (UTC) e o campo data/hora da tela
     function utcParaInputLocal(valor) {
         const d = valor ? new Date(String(valor).replace(' ', 'T') + 'Z') : new Date();
