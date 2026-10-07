@@ -21,7 +21,7 @@
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: var(--bg-color); color: var(--text-color); padding: 15px; }
-        .container { max-width: 1100px; margin: 0 auto; background: var(--card-bg); padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
+        .container { max-width: 1900px; margin: 0 auto; background: var(--card-bg); padding: 20px; border-radius: 12px; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }
         
         header { text-align: center; margin-bottom: 20px; }
         header h1 { color: var(--primary-color); font-size: 26px; margin-bottom: 5px; }
@@ -209,6 +209,10 @@
         .prod-picker-btn .pp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .prod-picker-btn .pp-name.placeholder { color: #999; }
         .prod-picker-btn .pp-qty { font-family: monospace; font-size: 12px; background: #eee; color: #444; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+        .desc-wrap { display: flex; gap: 4px; align-items: center; }
+        .desc-wrap .line-discount { width: 80px; min-width: 0; }
+        .desc-wrap .line-discount-type { width: 62px; padding: 8px 4px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; background: #fff; cursor: pointer; }
+        .desc-wrap .line-discount-type:disabled { background: #f3f3f3; color: #888; cursor: not-allowed; }
         .line-stock-cell { text-align: left; }
         .line-stock-badge { display: inline-block; min-width: 26px; text-align: center; font-weight: bold; font-size: 13px; background: #e8edf2; color: #333; padding: 3px 9px; border-radius: 8px; }
         .line-stock-badge.zero { background: #fde8e8; color: var(--danger-color); }
@@ -577,7 +581,7 @@
 
 <!-- Modal: Detalhes / Editar Fatura -->
 <div class="modal-overlay" id="saleModal">
-    <div class="modal" style="max-width: 900px;">
+    <div class="modal" style="max-width: 1250px;">
         <div id="ribbonPagoBadge" class="ribbon-pago" style="display: none;">PAGO</div>
 
         <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -616,7 +620,7 @@
                         <th style="width: 80px;">ESTOQUE</th>
                         <th style="width: 90px;">QTD</th>
                         <th style="width: 110px;">PREÇO UNIT.</th>
-                        <th style="width: 80px;">DESC. %</th>
+                        <th style="width: 150px;">DESCONTO</th>
                         <th>TOTAL</th>
                         <th style="width: 40px;"></th>
                     </tr>
@@ -2362,7 +2366,7 @@
                     <td class="line-stock-cell"><span class="line-stock-badge">–</span></td>
                     <td><input type="number" class="line-qty" value="${line.product_uom_qty ?? 1}" step="any" min="0" ${(editavel || qtdEditavel) ? '' : 'readonly'} oninput="recalcularTotais()"></td>
                     <td><input type="number" class="line-price" value="${line.price_unit || 0}" step="0.01" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
-                    <td><input type="number" class="line-discount" value="${line.discount || 0}" step="0.01" min="0" max="100" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
+                    <td><div class="desc-wrap"><input type="number" class="line-discount" value="${line.discount || 0}" step="0.01" min="0" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"><select class="line-discount-type" ${editavel ? '' : 'disabled'} onchange="trocarTipoDesconto(this)"><option value="pct">%</option><option value="val">R$</option></select></div></td>
                     <td class="line-subtotal" style="font-weight:bold;">R$ ${(line.price_subtotal || 0).toFixed(2)}</td>
                     <td>${(editavel || qtdEditavel) ? `<button class="btn-remove-line" onclick="removerLinha(this)">×</button>` : ''}</td>
                 </tr>
@@ -2396,7 +2400,7 @@
             <td class="line-stock-cell"><span class="line-stock-badge">–</span></td>
             <td><input type="number" class="line-qty" value="1" step="1" oninput="recalcularTotais()"></td>
             <td><input type="number" class="line-price" value="0.00" step="0.01" oninput="recalcularTotais()"></td>
-            <td><input type="number" class="line-discount" value="0" step="0.01" min="0" max="100" oninput="recalcularTotais()"></td>
+            <td><div class="desc-wrap"><input type="number" class="line-discount" value="0" step="0.01" min="0" oninput="recalcularTotais()"><select class="line-discount-type" onchange="trocarTipoDesconto(this)"><option value="pct">%</option><option value="val">R$</option></select></div></td>
             <td class="line-subtotal" style="font-weight:bold;">R$ 0.00</td>
             <td><button class="btn-remove-line" onclick="removerLinha(this)">×</button></td>
         `;
@@ -2426,12 +2430,41 @@
         recalcularTotais();
     }
 
+
+    // DESCONTO por linha: o usuário digita em % ou em R$; o Odoo só guarda %, então R$ é convertido para %
+    function descontoPercentualDaLinha(row) {
+        const input = row.querySelector('.line-discount');
+        const tipo = row.querySelector('.line-discount-type');
+        const v = Math.max(0, parseFloat(input && input.value) || 0);
+        if (tipo && tipo.value === 'val') {
+            const base = (parseFloat(row.querySelector('.line-qty').value) || 0) * (parseFloat(row.querySelector('.line-price').value) || 0);
+            return base > 0 ? Math.min(100, Math.round(v / base * 100 * 1000000) / 1000000) : 0;
+        }
+        return Math.min(100, v);
+    }
+
+    // Ao trocar entre % e R$, converte o número digitado para manter o mesmo desconto
+    function trocarTipoDesconto(selectElem) {
+        const row = selectElem.closest('.line-row');
+        const input = row.querySelector('.line-discount');
+        const base = (parseFloat(row.querySelector('.line-qty').value) || 0) * (parseFloat(row.querySelector('.line-price').value) || 0);
+        const atual = parseFloat(input.value) || 0;
+        if (selectElem.value === 'val') {
+            // estava em %, passa para R$
+            input.value = (base * atual / 100).toFixed(2);
+        } else {
+            // estava em R$, passa para %
+            input.value = base > 0 ? (Math.round(atual / base * 100 * 100) / 100).toString() : '0';
+        }
+        recalcularTotais();
+    }
+
     function recalcularTotais() {
         let totalGeral = 0;
         document.querySelectorAll('#saleLinesBody .line-row').forEach(row => {
             const qty = parseFloat(row.querySelector('.line-qty').value) || 0;
             const price = parseFloat(row.querySelector('.line-price').value) || 0;
-            const disc = Math.min(100, Math.max(0, parseFloat(row.querySelector('.line-discount')?.value) || 0));
+            const disc = descontoPercentualDaLinha(row);
             const subtotal = qty * price * (1 - disc / 100);
             row.querySelector('.line-subtotal').innerText = `R$ ${subtotal.toFixed(2)}`;
             totalGeral += subtotal;
@@ -2485,7 +2518,7 @@
                     product_id: prodVal,
                     qty: row.querySelector('.line-qty').value,
                     price: row.querySelector('.line-price').value,
-                    discount: row.querySelector('.line-discount')?.value || 0
+                    discount: descontoPercentualDaLinha(row)
                 });
             }
         });
