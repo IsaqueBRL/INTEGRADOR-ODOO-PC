@@ -53,8 +53,8 @@ function cached(key, ttlMs, fn) {
 }
 // Tela de Produtos: tipo "Mercadorias" (consu) + caixa "Vendas" marcada
 const PRODUCT_BASE_DOMAIN = [["type", "=", "consu"], ["sale_ok", "=", true]];
-const TTL_LONG = 10 * 60 * 1000;
-const TTL_PRODUCTS = 2 * 60 * 1000;
+const TTL_LONG = 3 * 60 * 1000;
+const TTL_PRODUCTS = 20 * 1000;
 const lookups = {
     paymentTerms: () => cached("payment_terms", TTL_LONG, () => execute("account.payment.term", "search_read", [[]], { fields: ["id", "name"] })),
     warehouses: () => cached("warehouses", TTL_LONG, () => execute("stock.warehouse", "search_read", [[]], { fields: ["id", "name", "code"] })),
@@ -131,6 +131,8 @@ export default async function handler(req, res) {
 
     const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
     const action = body.action || "get_products";
+    // qualquer ação que grava algo limpa as listas em cache deste servidor
+    if (!/^(get_|search_)/.test(action)) _cache.clear();
 
     try {
         const uid = await getUid();
