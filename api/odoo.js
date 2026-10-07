@@ -950,6 +950,85 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: true, warnings });
         }
 
+        // AÇÃO: ALTERAR LINHAS (ADICIONAR / EXCLUIR / MUDAR QUANTIDADE) E DATAS DE UM PEDIDO JÁ CONFIRMADO
+        if (action === "update_sale_lines") {
+            const { order_id, lines, removed_line_ids, order_date, due_date } = body;
+            if (!order_id) return res.status(400).json({ error: "ID do pedido é obrigatório." });
+            const oid = Number(order_id);
+
+            // linhas atuais do pedido: só escreve quantidade nas linhas que realmente mudaram
+            const atuais = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], { fields: ["id", "product_uom_qty"] });
+            const qtdAtual = {};
+            (atuais || []).forEach(l => { qtdAtual[l.id] = l.product_uom_qty; });
+
+            const cmds = [];
+            for (const rid of (removed_line_ids || [])) {
+                cmds.push([2, Number(rid), 0]);
+            }
+            for (const l of (lines || [])) {
+                if (!l.product_id) continue;
+                if (l.id) {
+                    const nova = Number(l.qty);
+                    if (qtdAtual[Number(l.id)] !== nova) cmds.push([1, Number(l.id), { product_uom_qty: nova }]);
+                } else {
+                    cmds.push([0, 0, {
+                        product_id: Number(l.product_id),
+                        product_uom_qty: Number(l.qty),
+                        price_unit: Number(l.price),
+                        discount: Number(l.discount) || 0
+                    }]);
+                }
+            }
+
+            const vals = { validity_date: due_date || false };
+            if (order_date) vals.date_order = order_date;
+            if (cmds.length > 0) vals.order_line = cmds;
+            try {
+                await execute("sale.order", "write", [[oid], vals]);
+            } catch (e) {
+                return res.status(400).json({ error: "Não foi possível alterar o pedido: " + e.message });
+            }
+
+            const warnings = [];
+
+            // O vencimento também vai para a(s) fatura(s) do pedido que não estejam canceladas
+            if (due_date) {
+                try {
+                    const ped = await execute("sale.order", "read", [[oid]], { fields: ["invoice_ids"] });
+                    const ids = (ped && ped[0] && ped[0].invoice_ids) || [];
+                    if (ids.length > 0) {
+                        const faturas = await execute("account.move", "search_read", [[["id", "in", ids], ["state", "!=", "cancel"]]], { fields: ["id", "name"] });
+                        for (const f of (faturas || [])) {
+                            try {
+                                await aplicarVencimentoNaFatura(f.id, due_date);
+                            } catch (e) {
+                                warnings.push("Não foi possível alterar o vencimento da fatura " + f.name + ": " + e.message);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    warnings.push("Não foi possível atualizar o vencimento da fatura: " + e.message);
+                }
+            }
+
+            // Se mexeu nas linhas, avisa o que ainda não acompanha o pedido (entrega e fatura)
+            if (cmds.length > 0) {
+                try {
+                    const depois = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], { fields: ["product_id", "product_uom_qty", "qty_delivered", "qty_invoiced"] });
+                    const difEntrega = (depois || []).filter(l => Number(l.qty_delivered) !== Number(l.product_uom_qty));
+                    const difFatura = (depois || []).filter(l => Number(l.qty_invoiced) !== Number(l.product_uom_qty));
+                    if (difEntrega.length > 0) {
+                        warnings.push("Pedido alterado. A entrega ainda não acompanha estas linhas: " + difEntrega.map(l => (Array.isArray(l.product_id) ? l.product_id[1] : "") + " (pedido " + l.product_uom_qty + ", entregue " + l.qty_delivered + ")").join("; ") + ". Confira a entrega no Odoo.");
+                    }
+                    if (difFatura.length > 0) {
+                        warnings.push("A fatura ainda não acompanha estas linhas: " + difFatura.map(l => (Array.isArray(l.product_id) ? l.product_id[1] : "") + " (pedido " + l.product_uom_qty + ", faturado " + l.qty_invoiced + ")").join("; ") + ". Ajuste a fatura.");
+                    }
+                } catch (e) { /* aviso é só informativo */ }
+            }
+
+            return res.status(200).json({ success: true, warnings });
+        }
+
         // AÇÃO: GERAR A FATURA (RASCUNHO) DE UM PEDIDO JÁ CONFIRMADO (CASO AINDA NÃO TENHA FATURA)
         if (action === "create_sale_invoice") {
             const { order_id } = body;
