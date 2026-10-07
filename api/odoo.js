@@ -191,6 +191,47 @@ export default async function handler(req, res) {
             return idsDepois.filter(id => !idsAntes.includes(id));
         };
 
+        // Bloqueia/desbloqueia as entregas CONCLUÍDAS de um pedido (botões "Trancar"/"Desbloquear" da entrega).
+        // Entrega desbloqueada = dá para editar produtos e quantidades da entrega pelo pedido de venda.
+        const definirBloqueioEntregas = async (orderId, bloquear) => {
+            const entregas = await execute("stock.picking", "search_read", [[
+                ["sale_id", "=", Number(orderId)], ["state", "=", "done"], ["picking_type_code", "=", "outgoing"]
+            ]], { fields: ["id", "is_locked"] });
+            for (const e of (entregas || [])) {
+                if (!!e.is_locked === !!bloquear) continue;
+                try {
+                    await execute("stock.picking", "write", [[e.id], { is_locked: !!bloquear }]);
+                } catch (err) {
+                    await execute("stock.picking", "action_toggle_is_locked", [[e.id]]);
+                }
+            }
+        };
+
+        // Regra: entrega desbloqueada enquanto a fatura não estiver paga; trancada quando todas as
+        // faturas (não canceladas) do pedido estiverem pagas.
+        const sincronizarBloqueioEntregas = async (invoiceId) => {
+            const pedidos = await execute("sale.order", "search_read", [[["invoice_ids", "in", [Number(invoiceId)]]]], { fields: ["id", "invoice_ids", "state"] });
+            for (const ped of (pedidos || [])) {
+                if (ped.state === "cancel") continue;
+                const faturas = await execute("account.move", "search_read", [[["id", "in", ped.invoice_ids], ["state", "!=", "cancel"]]], { fields: ["id", "payment_state"] });
+                const pago = (faturas || []).length > 0 && faturas.every(f => f.payment_state === "paid" || f.payment_state === "in_payment");
+                await definirBloqueioEntregas(ped.id, pago);
+            }
+        };
+
+        // Faturas ligadas a um pagamento (para atualizar o bloqueio quando o pagamento muda)
+        const faturasDoPagamento = async (paymentId) => {
+            try {
+                const p = await execute("account.payment", "read", [[Number(paymentId)]], { fields: ["reconciled_invoice_ids"] });
+                return (p && p[0] && p[0].reconciled_invoice_ids) || [];
+            } catch (e) { return []; }
+        };
+        const sincronizarPorPagamento = async (invoiceIds) => {
+            for (const id of (invoiceIds || [])) {
+                try { await sincronizarBloqueioEntregas(id); } catch (e) { /* melhor esforço */ }
+            }
+        };
+
         // Coloca a data de vencimento escolhida na tela no campo "Data de vencimento" da fatura.
         // A fatura é criada sem condição de pagamento, então esse campo fica livre para receber a data.
         const aplicarVencimentoNaFatura = async (invoiceId, dueDate) => {
@@ -401,7 +442,9 @@ export default async function handler(req, res) {
             const { payment_id } = body;
             if (!payment_id) return res.status(400).json({ error: "ID do pagamento é obrigatório." });
 
+            const faturasAntes = await faturasDoPagamento(payment_id);
             await execute("account.payment", "action_draft", [[Number(payment_id)]]);
+            await sincronizarPorPagamento(faturasAntes);
             return res.status(200).json({ success: true });
         }
 
@@ -411,6 +454,7 @@ export default async function handler(req, res) {
             if (!payment_id) return res.status(400).json({ error: "ID do pagamento é obrigatório." });
 
             await execute("account.payment", "action_post", [[Number(payment_id)]]);
+            await sincronizarPorPagamento(await faturasDoPagamento(payment_id));
             return res.status(200).json({ success: true });
         }
 
@@ -474,6 +518,8 @@ export default async function handler(req, res) {
                         active_ids: [Number(order_id)]
                     }
                 });
+                // Fatura paga => tranca a entrega do pedido
+                try { await sincronizarBloqueioEntregas(Number(order_id)); } catch (e) { /* melhor esforço */ }
                 return res.status(200).json({ success: true });
             } else {
                 return res.status(500).json({ error: "Não foi possível gerar o pagamento no Odoo." });
@@ -796,6 +842,13 @@ export default async function handler(req, res) {
                     }
                 } catch (e) {
                     warnings.push("Não foi possível localizar a entrega gerada pelo pedido.");
+                }
+
+                // Deixa a entrega concluída DESBLOQUEADA (só é trancada quando a fatura for paga)
+                try {
+                    await definirBloqueioEntregas(orderId, false);
+                } catch (e) {
+                    warnings.push("Pedido confirmado, mas não foi possível deixar a entrega desbloqueada: " + e.message);
                 }
 
                 // Gera a fatura em rascunho (equivalente a escolher "Fatura normal" e "Criar Rascunho" no Odoo).
