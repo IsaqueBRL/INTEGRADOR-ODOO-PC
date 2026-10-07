@@ -2744,18 +2744,21 @@
     }
 
     // Odoo devolve datas em UTC ("YYYY-MM-DD HH:MM:SS"); mostra no horário local, ex.: 18/09/2026 14:40
-    // "Lançamento" só mostra a data. Para o Odoo (que guarda data e hora), mantém a hora original do pedido;
-    // se a data não mudou, devolve o valor original sem alterar nada.
+    // "Lançamento" só mostra a data. Como o Odoo guarda data e hora, a data escolhida é enviada
+    // sempre às 12:00 (meio-dia), a hora mais segura contra o dia mudar por diferença de fuso.
+    // Se a data não foi alterada em um pedido existente, devolve o valor original sem mexer.
     let originalOrderDateUtc = null;
     let datasIniciais = { order: '', due: '' };
     function orderDateParaEnvio() {
         const dia = document.getElementById('saleOrderDate').value;
         if (!dia) return '';
-        const base = originalOrderDateUtc ? new Date(String(originalOrderDateUtc).replace(' ', 'T') + 'Z') : new Date();
-        const p = n => String(n).padStart(2, '0');
-        const diaBase = `${base.getFullYear()}-${p(base.getMonth() + 1)}-${p(base.getDate())}`;
-        if (originalOrderDateUtc && dia === diaBase) return originalOrderDateUtc;
-        return inputLocalParaUtc(`${dia}T${p(base.getHours())}:${p(base.getMinutes())}`);
+        if (originalOrderDateUtc) {
+            const base = new Date(String(originalOrderDateUtc).replace(' ', 'T') + 'Z');
+            const p = n => String(n).padStart(2, '0');
+            const diaBase = `${base.getFullYear()}-${p(base.getMonth() + 1)}-${p(base.getDate())}`;
+            if (dia === diaBase) return originalOrderDateUtc;
+        }
+        return inputLocalParaUtc(`${dia}T12:00`);
     }
 
     // Mostra "Salvar Alterações" só quando Lançamento ou Vencimento foram alterados
