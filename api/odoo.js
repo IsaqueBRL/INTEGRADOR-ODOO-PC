@@ -715,7 +715,7 @@ export default async function handler(req, res) {
 
         // AÇÃO: CRIAR/ATUALIZAR PEDIDO DE VENDA (E, OPCIONALMENTE, CONFIRMAR + BAIXAR ESTOQUE + FATURAR)
         if (action === "save_sale_order") {
-            const { order_id, partner_id, due_date, warehouse_id, lines, confirm, removed_line_ids } = body;
+            const { order_id, partner_id, due_date, order_date, warehouse_id, lines, confirm, removed_line_ids } = body;
 
             if (!partner_id) return res.status(400).json({ error: "Selecione um cliente para o pedido." });
             const validLines = (lines || []).filter(l => l.product_id);
@@ -732,6 +732,8 @@ export default async function handler(req, res) {
                 validity_date: due_date || false
             };
             if (warehouse_id) headerData.warehouse_id = Number(warehouse_id);
+            // "Lançamento" = "Data do pedido" do Odoo (data e hora em UTC)
+            if (order_date) headerData.date_order = order_date;
 
             if (!orderId) {
                 headerData.order_line = validLines.map(l => [0, 0, {
@@ -819,6 +821,43 @@ export default async function handler(req, res) {
             }
 
             return res.status(200).json({ success: true, id: orderId, invoice_id: invoiceId, warnings });
+        }
+
+        // AÇÃO: ALTERAR "LANÇAMENTO" (DATA DO PEDIDO) E VENCIMENTO DE UM PEDIDO, MESMO JÁ CONFIRMADO
+        if (action === "update_sale_dates") {
+            const { order_id, order_date, due_date } = body;
+            if (!order_id) return res.status(400).json({ error: "ID do pedido é obrigatório." });
+            const oid = Number(order_id);
+
+            const vals = { validity_date: due_date || false };
+            if (order_date) vals.date_order = order_date;
+            try {
+                await execute("sale.order", "write", [[oid], vals]);
+            } catch (e) {
+                return res.status(500).json({ error: "Não foi possível alterar as datas do pedido: " + e.message });
+            }
+
+            // O vencimento também vai para a(s) fatura(s) do pedido que não estejam canceladas
+            const warnings = [];
+            if (due_date) {
+                try {
+                    const ped = await execute("sale.order", "read", [[oid]], { fields: ["invoice_ids"] });
+                    const ids = (ped && ped[0] && ped[0].invoice_ids) || [];
+                    if (ids.length > 0) {
+                        const faturas = await execute("account.move", "search_read", [[["id", "in", ids], ["state", "!=", "cancel"]]], { fields: ["id", "name"] });
+                        for (const f of (faturas || [])) {
+                            try {
+                                await aplicarVencimentoNaFatura(f.id, due_date);
+                            } catch (e) {
+                                warnings.push("Datas do pedido salvas, mas não foi possível alterar o vencimento da fatura " + f.name + ": " + e.message);
+                            }
+                        }
+                    }
+                } catch (e) {
+                    warnings.push("Datas do pedido salvas, mas não foi possível atualizar a fatura: " + e.message);
+                }
+            }
+            return res.status(200).json({ success: true, warnings });
         }
 
         // AÇÃO: GERAR A FATURA (RASCUNHO) DE UM PEDIDO JÁ CONFIRMADO (CASO AINDA NÃO TENHA FATURA)
@@ -993,7 +1032,7 @@ export default async function handler(req, res) {
             // Listas de apoio vêm do cache; a lista de parceiros foi removida (o site não a usa aqui).
             const [orders, lines, paymentTerms, products, warehouses] = await Promise.all([
                 execute("sale.order", "search_read", [[["id", "=", oid]]], {
-                    fields: ["id", "name", "partner_id", "payment_term_id", "order_line", "state", "amount_total", "warehouse_id", "invoice_ids", "invoice_status", "validity_date"]
+                    fields: ["id", "name", "partner_id", "payment_term_id", "order_line", "state", "amount_total", "warehouse_id", "invoice_ids", "invoice_status", "validity_date", "date_order"]
                 }),
                 execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], {
                     fields: ["id", "product_id", "product_uom_qty", "price_unit", "discount", "price_subtotal"]
