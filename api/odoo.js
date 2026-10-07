@@ -201,7 +201,7 @@ export default async function handler(req, res) {
 
             const pickings = await execute("stock.picking", "search_read", [[
                 ["sale_id", "=", oid], ["state", "=", "done"], ["picking_type_code", "=", "outgoing"]
-            ]], { fields: ["id", "name", "location_id", "location_dest_id", "picking_type_id", "partner_id", "group_id"] });
+            ]], { fields: ["id", "name", "location_id", "location_dest_id", "picking_type_id", "partner_id"] });
 
             for (const p of (pickings || [])) {
                 try {
@@ -245,14 +245,23 @@ export default async function handler(req, res) {
 
                     // tipo de operação de devolução ("Recebimentos") definido no tipo da entrega
                     let tipoDevolucaoId = null;
+                    let armazemTipoId = null;
                     try {
-                        const tp = await execute("stock.picking.type", "read", [[tipoOrigemId]], { fields: ["return_picking_type_id", "warehouse_id"] });
-                        if (tp && tp[0] && Array.isArray(tp[0].return_picking_type_id)) tipoDevolucaoId = tp[0].return_picking_type_id[0];
-                        if (!tipoDevolucaoId && tp && tp[0] && Array.isArray(tp[0].warehouse_id)) {
-                            const incoming = await execute("stock.picking.type", "search_read", [[["code", "=", "incoming"], ["warehouse_id", "=", tp[0].warehouse_id[0]]]], { fields: ["id"], limit: 1 });
-                            if (incoming && incoming[0]) tipoDevolucaoId = incoming[0].id;
+                        const defsTipo = await onlyExistingFields("stock.picking.type", { return_picking_type_id: 1, warehouse_id: 1 });
+                        const camposTipo = Object.keys(defsTipo);
+                        if (camposTipo.length > 0) {
+                            const tp = await execute("stock.picking.type", "read", [[tipoOrigemId]], { fields: camposTipo });
+                            if (tp && tp[0] && Array.isArray(tp[0].return_picking_type_id)) tipoDevolucaoId = tp[0].return_picking_type_id[0];
+                            if (tp && tp[0] && Array.isArray(tp[0].warehouse_id)) armazemTipoId = tp[0].warehouse_id[0];
                         }
-                    } catch (e) { /* tratado logo abaixo */ }
+                    } catch (e) { /* tenta o plano B abaixo */ }
+                    if (!tipoDevolucaoId) {
+                        // plano B: tipo "Recebimentos" do mesmo armazém da entrega
+                        const dom = [["code", "=", "incoming"]];
+                        if (armazemTipoId) dom.push(["warehouse_id", "=", armazemTipoId]);
+                        const incoming = await execute("stock.picking.type", "search_read", [dom], { fields: ["id"], limit: 1 }).catch(() => []);
+                        if (incoming && incoming[0]) tipoDevolucaoId = incoming[0].id;
+                    }
                     if (!tipoDevolucaoId) throw new Error("não foi encontrado o tipo de operação de devolução (Recebimentos) deste local");
 
                     // linhas originais completas (para copiar produto e unidade de medida)
@@ -282,7 +291,6 @@ export default async function handler(req, res) {
                         origin: "Devolução de " + p.name,
                         location_id: clienteLocId,
                         location_dest_id: origemId,
-                        group_id: Array.isArray(p.group_id) ? p.group_id[0] : false,
                         return_id: p.id,
                         move_ids: moveCommands
                     });
