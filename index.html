@@ -1355,11 +1355,11 @@
                 const orderNum = sale.name || "-";
                 const total = sale.amount_total ?? 0;
                 const statusMeta = getOrderStatusMeta(sale.state);
-                const paymentMeta = getPaymentSummaryMeta(sale.payment_summary);
+                const paymentMeta = sale.state === 'cancel' ? { label: 'Cancelado', cls: 'status-cancel' } : getPaymentSummaryMeta(sale.payment_summary);
 
                 html += `
                     <tr style="cursor: pointer;" onclick="abrirDetalhesVenda(${sale.id})">
-                        <td data-sort="${dataParaOrdenar(sale.date_order)}">${formatarDataEfetiva(sale.date_order)}</td>
+                        <td data-sort="${dataParaOrdenar(sale.date_order)}">${formatarSoData(sale.date_order)}</td>
                         <td><strong style="color: var(--primary-color); text-decoration: underline;">${orderNum}</strong></td>
                         <td>${clientName}</td>
                         <td>${warehouseName}</td>
@@ -2673,6 +2673,14 @@
     }
 
     // Odoo devolve datas em UTC ("YYYY-MM-DD HH:MM:SS"); mostra no horário local, ex.: 18/09/2026 14:40
+    // Só a data (sem horas), no fuso do usuário
+    function formatarSoData(valor) {
+        if (!valor) return '-';
+        const d = new Date(String(valor).replace(' ', 'T') + 'Z');
+        if (isNaN(d.getTime())) return '-';
+        return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    }
+
     function formatarDataEfetiva(valor) {
         if (!valor) return '-';
         const d = new Date(String(valor).replace(' ', 'T') + 'Z');
