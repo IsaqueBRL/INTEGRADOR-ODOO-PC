@@ -200,6 +200,27 @@
         .custom-modal-btn-cancel:hover {
             background-color: #555;
         }
+
+        /* Seletor de produto da venda (Descrição | Estoque em colunas separadas) */
+        .line-product.enhanced { display: none; }
+        .prod-picker-btn { width: 100%; min-width: 220px; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 12px; background: #fff; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; color: #333; cursor: pointer; text-align: left; font-family: inherit; }
+        .prod-picker-btn:hover:not(:disabled) { border-color: var(--primary-color); }
+        .prod-picker-btn:disabled { background: #f3f3f3; color: #888; cursor: not-allowed; }
+        .prod-picker-btn .pp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .prod-picker-btn .pp-name.placeholder { color: #999; }
+        .prod-picker-btn .pp-qty { font-family: monospace; font-size: 12px; background: #eee; color: #444; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+        .prod-picker-btn::after { content: '▾'; color: #777; }
+        #prodPickerPanel { position: fixed; z-index: 5000; background: #fff; border: 1px solid var(--primary-color); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.25); display: none; flex-direction: column; overflow: hidden; }
+        #prodPickerPanel input { margin: 8px; width: calc(100% - 16px); box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; }
+        #prodPickerPanel .pp-head, #prodPickerPanel .pp-item { display: grid; grid-template-columns: 1fr 96px; gap: 10px; padding: 8px 14px; align-items: center; }
+        #prodPickerPanel .pp-head { background: #f4eef2; color: var(--primary-color); font-size: 12px; font-weight: bold; text-transform: uppercase; border-top: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); }
+        #prodPickerPanel .pp-head span:last-child, #prodPickerPanel .pp-item .pp-q { text-align: right; }
+        #prodPickerPanel .pp-list { overflow-y: auto; max-height: 300px; }
+        #prodPickerPanel .pp-item { cursor: pointer; font-size: 14px; border-bottom: 1px solid #eee; }
+        #prodPickerPanel .pp-item:hover, #prodPickerPanel .pp-item.sel { background: #f4eef2; }
+        #prodPickerPanel .pp-item .pp-q { font-family: monospace; color: #444; }
+        #prodPickerPanel .pp-item .pp-q.warn { color: var(--danger-color); font-family: inherit; font-size: 12px; }
+        #prodPickerPanel .pp-empty { padding: 14px; text-align: center; color: #888; font-size: 13px; }
     </style>
 </head>
 <body>
@@ -926,6 +947,112 @@
     let availableProducts = [];
 
     // Texto da opção de produto (mostra o saldo quando o produto veio filtrado por armazém)
+
+    /* ------------------------------------------------------------
+       SELETOR DE PRODUTO DA VENDA: lista com DESCRIÇÃO e ESTOQUE em colunas separadas.
+       O <select class="line-product"> continua existindo (escondido) como guardião do valor.
+       ------------------------------------------------------------ */
+    let prodPickerSelect = null;
+
+    function itensDoSelectProduto(sel) {
+        return Array.from(sel.options).filter(o => o.value).map(o => {
+            const p = availableProducts.find(x => String(x.id) === String(o.value));
+            const semEstoque = /⚠/.test(o.text);
+            const nome = p ? p.display_name : o.text.replace(/ ⚠.*$/, '').replace(/\s*\(-?[\d.,]+ un\)\s*$/, '');
+            const q = p && p.stock_qty !== undefined && p.stock_qty !== null ? Number(p.stock_qty) : null;
+            return { id: o.value, nome, qtd: q, semEstoque };
+        });
+    }
+
+    function atualizarBotaoProduto(sel) {
+        const btn = sel._ppBtn;
+        if (!btn) return;
+        btn.disabled = sel.disabled;
+        const it = itensDoSelectProduto(sel).find(i => String(i.id) === String(sel.value));
+        const escapa = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        if (!it) {
+            btn.innerHTML = '<span class="pp-name placeholder">Selecione um produto...</span>';
+        } else {
+            const qtd = it.semEstoque ? 'sem estoque' : (it.qtd !== null ? `${it.qtd} un.` : '');
+            btn.innerHTML = `<span class="pp-name">${escapa(it.nome)}</span>${qtd ? `<span class="pp-qty">${qtd}</span>` : ''}`;
+        }
+    }
+
+    function melhorarSelectsProdutoVenda() {
+        document.querySelectorAll('#saleLinesBody .line-product').forEach(sel => {
+            if (!sel._ppBtn) {
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'prod-picker-btn';
+                btn.addEventListener('click', () => abrirSeletorProduto(sel, btn));
+                sel.classList.add('enhanced');
+                sel.parentNode.insertBefore(btn, sel);
+                sel._ppBtn = btn;
+            }
+            atualizarBotaoProduto(sel);
+        });
+    }
+
+    function fecharSeletorProduto() {
+        const panel = document.getElementById('prodPickerPanel');
+        if (panel) panel.style.display = 'none';
+        prodPickerSelect = null;
+    }
+
+    function abrirSeletorProduto(sel, btn) {
+        if (sel.disabled) return;
+        let panel = document.getElementById('prodPickerPanel');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.id = 'prodPickerPanel';
+            panel.innerHTML = '<input type="text" id="prodPickerSearch" placeholder="Buscar produto..." autocomplete="off"><div class="pp-head"><span>Descrição</span><span>Estoque</span></div><div class="pp-list" id="prodPickerList"></div>';
+            document.body.appendChild(panel);
+            document.addEventListener('mousedown', e => {
+                if (panel.style.display !== 'none' && !panel.contains(e.target) && !(e.target.closest && e.target.closest('.prod-picker-btn'))) fecharSeletorProduto();
+            });
+            document.addEventListener('keydown', e => { if (e.key === 'Escape') fecharSeletorProduto(); });
+            window.addEventListener('resize', fecharSeletorProduto);
+            document.addEventListener('scroll', e => { if (!panel.contains(e.target)) fecharSeletorProduto(); }, true);
+            document.getElementById('prodPickerSearch').addEventListener('input', () => montarListaSeletor());
+            document.getElementById('prodPickerSearch').addEventListener('keydown', e => {
+                if (e.key === 'Enter') { const first = document.querySelector('#prodPickerList .pp-item'); if (first) first.click(); }
+            });
+        }
+        prodPickerSelect = sel;
+
+        const r = btn.getBoundingClientRect();
+        const largura = Math.max(r.width, 460);
+        panel.style.width = largura + 'px';
+        panel.style.left = Math.max(8, Math.min(r.left, window.innerWidth - largura - 8)) + 'px';
+        const abaixo = window.innerHeight - r.bottom;
+        panel.style.display = 'flex';
+        document.getElementById('prodPickerSearch').value = '';
+        montarListaSeletor();
+        document.getElementById('prodPickerList').style.maxHeight = Math.max(160, Math.min(300, Math.max(abaixo, r.top) - 110)) + 'px';
+        if (abaixo >= 260 || abaixo >= r.top) { panel.style.top = (r.bottom + 4) + 'px'; panel.style.bottom = 'auto'; }
+        else { panel.style.bottom = (window.innerHeight - r.top + 4) + 'px'; panel.style.top = 'auto'; }
+        document.getElementById('prodPickerSearch').focus();
+    }
+
+    function montarListaSeletor() {
+        const sel = prodPickerSelect;
+        if (!sel) return;
+        const termo = (document.getElementById('prodPickerSearch').value || '').trim().toLowerCase();
+        const escapa = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        const itens = itensDoSelectProduto(sel).filter(i => !termo || i.nome.toLowerCase().includes(termo));
+        const list = document.getElementById('prodPickerList');
+        if (itens.length === 0) { list.innerHTML = '<div class="pp-empty">Nenhum produto encontrado neste local.</div>'; return; }
+        list.innerHTML = itens.map(i => `<div class="pp-item ${String(i.id) === String(sel.value) ? 'sel' : ''}" data-id="${i.id}"><span>${escapa(i.nome)}</span><span class="pp-q ${i.semEstoque ? 'warn' : ''}">${i.semEstoque ? 'sem estoque' : (i.qtd !== null ? i.qtd + ' un.' : '')}</span></div>`).join('');
+        list.querySelectorAll('.pp-item').forEach(el => el.addEventListener('click', () => {
+            const alvo = prodPickerSelect;
+            if (!alvo) return;
+            alvo.value = el.getAttribute('data-id');
+            alvo.dispatchEvent(new Event('change', { bubbles: true }));
+            atualizarBotaoProduto(alvo);
+            fecharSeletorProduto();
+        }));
+    }
+
     function labelProduto(p) {
         const q = p.stock_qty;
         return (q === undefined || q === null) ? p.display_name : `${p.display_name} (${Number(q)} un)`;
@@ -978,6 +1105,7 @@
             sel.innerHTML = opts;
             sel.value = cur;
         });
+        melhorarSelectsProdutoVenda();
         if (semEstoque > 0) {
             alert('Atenção: ' + semEstoque + ' produto(s) do pedido não têm estoque neste local (marcados com ⚠).');
         }
@@ -2214,6 +2342,7 @@
             `;
         });
         tbody.innerHTML = html;
+        melhorarSelectsProdutoVenda();
         recalcularTotais();
     }
 
@@ -2244,6 +2373,7 @@
             <td><button class="btn-remove-line" onclick="removerLinha(this)">×</button></td>
         `;
         tbody.appendChild(tr);
+        melhorarSelectsProdutoVenda();
     }
 
     function aoSelecionarProduto(selectElem) {
