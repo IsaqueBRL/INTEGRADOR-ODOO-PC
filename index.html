@@ -216,7 +216,7 @@
         <div class="menu-buttons">
             <button class="btn-menu" onclick="abrirTelaProdutos();">PRODUTOS</button>
             <button class="btn-menu" onclick="abrirTelaEstoque();">ESTOQUE</button>
-            <button class="btn-menu" onclick="mostrarTela('vendasSection'); buscarVendas();">VENDAS</button>
+            <button class="btn-menu" onclick="abrirTelaVendas();">VENDAS</button>
             <button class="btn-menu" onclick="mostrarTela('financeiroSection'); buscarFinanceiro();">FINANCEIRO</button>
             <button class="btn-menu" onclick="abrirTelaTransferencias();">TRANSFERÊNCIAS</button>
         </div>
@@ -349,10 +349,12 @@
         <div class="search-box">
             <input type="text" id="searchVendasInput" placeholder="Digite o número do pedido ou cliente..." oninput="debounceSearch('vendas')">
             <select id="vendasWarehouseFilter" onchange="buscarVendas()" title="Filtrar por local/armazém" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:200px;cursor:pointer;">
-                <option value="">Todos os locais</option>
+                <option value="">Selecione um local...</option>
+                <option value="all">Todos os locais</option>
             </select>
             <select id="vendasStatusFilter" onchange="buscarVendas()" title="Filtrar por status" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:200px;cursor:pointer;">
-                <option value="">Todos os status</option>
+                <option value="">Selecione um status...</option>
+                <option value="all">Todos os status</option>
                 <option value="draft">Orçamento</option>
                 <option value="sale">Confirmado</option>
                 <option value="cancel">Cancelado</option>
@@ -360,7 +362,7 @@
             <button onclick="buscarVendas()">Pesquisar</button>
         </div>
 
-        <div id="statusVendas" class="status">Carregando pedidos...</div>
+        <div id="statusVendas" class="status">Escolha um local, um status ou digite o pedido/cliente para ver os pedidos.</div>
 
         <div class="table-container">
             <table>
@@ -1290,19 +1292,40 @@
             const data = await response.json();
             if (!data.result) return;
             const atual = select.value;
-            select.innerHTML = '<option value="">Todos os locais</option>' +
+            select.innerHTML = '<option value="">Selecione um local...</option><option value="all">Todos os locais</option>' +
                 data.result.map(w => `<option value="${w.id}">${w.name}</option>`).join('');
             select.value = atual;
             vendasWarehousesCarregados = true;
         } catch (e) { /* tenta de novo na próxima pesquisa */ }
     }
 
+    // Abre a tela de Vendas sem carregar nada: o usuário escolhe os filtros primeiro
+    function abrirTelaVendas() {
+        mostrarTela('vendasSection');
+        document.getElementById('searchVendasInput').value = '';
+        document.getElementById('vendasWarehouseFilter').value = '';
+        document.getElementById('vendasStatusFilter').value = '';
+        carregarFiltroArmazensVendas();
+        buscarVendas(); // sem filtro, só mostra a orientação
+    }
+
+    let vendasReqId = 0;
+
     async function buscarVendas() {
         const query = document.getElementById("searchVendasInput").value.trim();
         const status = document.getElementById("statusVendas");
         const results = document.getElementById("resultsVendas");
-        const warehouse_id = document.getElementById("vendasWarehouseFilter").value;
-        const order_status = document.getElementById("vendasStatusFilter").value;
+        const localEscolhido = document.getElementById("vendasWarehouseFilter").value;
+        const statusEscolhido = document.getElementById("vendasStatusFilter").value;
+        const warehouse_id = localEscolhido === 'all' ? '' : localEscolhido;
+        const order_status = statusEscolhido === 'all' ? '' : statusEscolhido;
+        const reqId = ++vendasReqId;
+
+        if (!query && !localEscolhido && !statusEscolhido) {
+            status.innerText = "Escolha um local, um status ou digite o pedido/cliente para ver os pedidos.";
+            results.innerHTML = "";
+            return;
+        }
 
         status.innerText = "Pesquisando pedidos...";
         carregarFiltroArmazensVendas();
@@ -1315,6 +1338,7 @@
             });
 
             const data = await response.json();
+            if (reqId !== vendasReqId) return; // o usuário já mudou os filtros: ignora esta resposta
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhum pedido encontrado.";
@@ -2268,7 +2292,14 @@
             const data = await res.json();
 
             if (data.success) {
-                alert('Pedido cancelado com sucesso!');
+                let msg = 'Pedido cancelado com sucesso!';
+                if (data.devolvidos && data.devolvidos.length > 0) {
+                    msg += '\n\nItens devolvidos ao estoque de origem (' + data.devolvidos.join(', ') + ').';
+                }
+                if (data.warnings && data.warnings.length > 0) {
+                    msg += '\n\nAtenção:\n- ' + data.warnings.join('\n- ');
+                }
+                alert(msg);
                 fecharSaleModal();
                 buscarVendas();
             } else {
