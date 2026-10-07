@@ -569,8 +569,8 @@
                 <div id="partnerDropdown" class="partner-dropdown"></div>
             </div>
             <div style="flex: 1; min-width: 180px;">
-                <label>Condição de Pagamento</label>
-                <select id="salePaymentTerm"></select>
+                <label>Vencimento</label>
+                <input type="date" id="saleDueDate">
             </div>
             <div style="flex: 1; min-width: 200px;">
                 <label>Local de Estoque (Armazém) *</label>
@@ -1646,17 +1646,15 @@
         document.getElementById('saleCustomerInput').value = '';
         document.getElementById('saleCustomerInput').disabled = false;
 
-        const selectTerm = document.getElementById('salePaymentTerm');
-        selectTerm.innerHTML = '<option value="">Selecione...</option>';
-        selectTerm.disabled = false;
+        const dueInput = document.getElementById('saleDueDate');
+        const hoje = new Date();
+        dueInput.value = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
+        dueInput.disabled = false;
 
         try {
             const res = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'get_sale_form_data' }) });
             const formData = await res.json();
 
-            (formData.payment_terms || []).forEach(term => {
-                selectTerm.innerHTML += `<option value="${term.id}">${term.name}</option>`;
-            });
             availableProducts = formData.products || [];
 
             availableWarehouses = formData.warehouses || [];
@@ -1725,12 +1723,9 @@
             statusBadge.innerText = statusMeta.label;
             statusBadge.className = `status-badge ${statusMeta.cls}`;
 
-            const selectTerm = document.getElementById('salePaymentTerm');
-            selectTerm.innerHTML = '<option value="">Selecione...</option>';
-            (data.payment_terms || []).forEach(term => {
-                const selected = (Array.isArray(order.payment_term_id) && order.payment_term_id[0] === term.id) ? 'selected' : '';
-                selectTerm.innerHTML += `<option value="${term.id}" ${selected}>${term.name}</option>`;
-            });
+            // Vencimento: se já existe fatura, vale a data de vencimento dela; senão, a guardada no pedido
+            const dueInput = document.getElementById('saleDueDate');
+            dueInput.value = (invoice && invoice.invoice_date_due) ? invoice.invoice_date_due : (order.validity_date || '');
 
             const selectWh = document.getElementById('saleWarehouse');
             selectWh.innerHTML = '';
@@ -1741,7 +1736,7 @@
             });
 
             document.getElementById('saleCustomerInput').disabled = !isCurrentInvoiceEditable;
-            selectTerm.disabled = !isCurrentInvoiceEditable;
+            dueInput.disabled = !isCurrentInvoiceEditable;
             selectWh.disabled = !isCurrentInvoiceEditable;
             document.getElementById('btnAddLine').style.display = isCurrentInvoiceEditable ? 'inline-block' : 'none';
 
@@ -2415,7 +2410,7 @@
                     action: 'save_sale_order',
                     order_id: currentOrderId,
                     partner_id: document.getElementById('saleCustomerId').value,
-                    payment_term_id: document.getElementById('salePaymentTerm').value,
+                    due_date: document.getElementById('saleDueDate').value,
                     warehouse_id: document.getElementById('saleWarehouse').value,
                     lines: coletarLinhasDoFormulario(),
                     removed_line_ids: linesToRemove,
@@ -2447,7 +2442,7 @@
                     action: 'save_sale_order',
                     order_id: currentOrderId,
                     partner_id: document.getElementById('saleCustomerId').value,
-                    payment_term_id: document.getElementById('salePaymentTerm').value,
+                    due_date: document.getElementById('saleDueDate').value,
                     warehouse_id: document.getElementById('saleWarehouse').value,
                     lines: coletarLinhasDoFormulario(),
                     removed_line_ids: linesToRemove,
