@@ -392,20 +392,19 @@
         </div>
 
         <div class="search-box filtros">
-            <input type="text" id="searchFinanceiroInput" style="flex: 0 1 260px; min-width: 160px;" placeholder="Nome ou código da conta..." oninput="debounceSearch('financeiro')">
+            <input type="text" id="searchFinanceiroInput" style="flex: 0 1 260px; min-width: 160px;" placeholder="Nome da conta..." oninput="debounceSearch('financeiro')">
             <button onclick="buscarFinanceiro()">Pesquisar</button>
             <button onclick="abrirModalTransferenciaContas()" style="margin-left: auto;">+ Transferência entre Contas</button>
         </div>
 
         <div id="statusFinanceiro" class="status">Carregando contas financeiras...</div>
 
-        <div class="table-container">
-            <table>
+        <div class="table-container" style="max-width: 460px;">
+            <table style="min-width: 0;">
                 <thead>
                     <tr>
-                        <th style="width: 140px;">CÓDIGO</th>
                         <th>NOME DA CONTA</th>
-                        <th style="width: 180px; text-align: right;">SALDO ATUAL</th>
+                        <th class="sort-desc" style="width: 150px; text-align: right;">SALDO ATUAL</th>
                     </tr>
                 </thead>
                 <tbody id="resultsFinanceiro"></tbody>
@@ -428,7 +427,7 @@
             <button onclick="carregarExtratoFinanceiro()">Pesquisar</button>
             <button onclick="limparFiltrosExtrato()" style="background-color: #777;">Limpar</button>
         </div>
-        <div id="statusExtrato" class="status">Carregando extrato...</div>
+        <div id="statusExtrato" class="status">Escolha um parceiro, uma conta ou um período para ver as movimentações.</div>
         <div class="table-container">
             <table>
                 <thead>
@@ -1476,13 +1475,25 @@
     }
 
     // Extrato: lançamentos de diário que movimentam as contas "Banco e caixa"
+    let extratoReqId = 0;
+
     async function carregarExtratoFinanceiro() {
         const status = document.getElementById('statusExtrato');
         const results = document.getElementById('resultsExtrato');
         const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-        status.innerText = 'Carregando extrato...';
+        const reqId = ++extratoReqId;
 
         const selConta = document.getElementById('extratoConta');
+
+        // Só mostra o extrato depois que o usuário aplicar algum filtro
+        if (!document.getElementById('extratoParceiro').value.trim() && !selConta.value &&
+            !document.getElementById('extratoDataDe').value && !document.getElementById('extratoDataAte').value) {
+            status.innerText = 'Escolha um parceiro, uma conta ou um período para ver as movimentações.';
+            results.innerHTML = '';
+            return;
+        }
+
+        status.innerText = 'Carregando extrato...';
         const payload = {
             action: 'get_account_statement',
             partner: document.getElementById('extratoParceiro').value.trim(),
@@ -1498,6 +1509,7 @@
                 body: JSON.stringify(payload)
             });
             const data = await response.json();
+            if (reqId !== extratoReqId) return; // o usuário já mudou os filtros: ignora esta resposta
 
             // Opções do filtro de conta: contas "Banco e caixa" (montadas uma vez, mantendo a escolha atual)
             if (Array.isArray(data.accounts) && selConta.options.length <= 1 && data.accounts.length > 0) {
@@ -1558,12 +1570,24 @@
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhuma conta encontrada.";
                 foot.innerHTML = "";
-                results.innerHTML = `<tr><td colspan="3" style="text-align: center; color: #888;">Nenhuma conta encontrada</td></tr>`;
+                results.innerHTML = `<tr><td colspan="2" style="text-align: center; color: #888;">Nenhuma conta encontrada</td></tr>`;
                 return;
             }
 
             status.innerText = `${data.result.length} conta(s) encontrada(s):`;
             let html = "";
+
+            // O filtro de conta do extrato é montado aqui, já que o extrato só carrega depois de um filtro
+            const selContaExtrato = document.getElementById('extratoConta');
+            if (!query && selContaExtrato.options.length <= 1) {
+                const atual = selContaExtrato.value;
+                selContaExtrato.innerHTML = '<option value="">Conta / Diário: todas</option>' +
+                    data.result.map(a => `<option value="${a.id}">${String(a.name).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))}</option>`).join('');
+                selContaExtrato.value = atual;
+            }
+
+            // Sempre do maior para o menor saldo
+            data.result.sort((a, b) => (b.balance ?? 0) - (a.balance ?? 0));
 
             data.result.forEach(acc => {
                 const balance = acc.balance ?? 0;
@@ -1571,7 +1595,6 @@
 
                 html += `
                     <tr>
-                        <td><strong>${acc.code}</strong></td>
                         <td><strong>${acc.name}</strong></td>
                         <td style="text-align: right; font-weight: bold; ${balanceClass}">
                             R$ ${balance.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -1585,17 +1608,21 @@
             // O total fica no rodapé (tfoot), fora do corpo da tabela, para não entrar na ordenação
             foot.innerHTML = `
                 <tr style="background: #f4eef2; border-top: 2px solid var(--primary-color);">
-                    <td colspan="2" style="text-align: right; font-weight: bold;">TOTAL</td>
+                    <td style="text-align: right; font-weight: bold;">TOTAL</td>
                     <td style="text-align: right; font-weight: bold; color: ${totalColor};">
                         R$ ${total.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                 </tr>
             `;
             results.innerHTML = html;
+            // mantém a seta ↓ no cabeçalho "Saldo Atual"
+            const thsFin = results.closest('table').querySelectorAll('thead th');
+            thsFin.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
+            if (thsFin[1]) thsFin[1].classList.add('sort-desc');
         } catch (e) {
             status.innerText = "Erro ao carregar dados financeiro.";
             foot.innerHTML = "";
-            results.innerHTML = `<tr><td colspan="3" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
+            results.innerHTML = `<tr><td colspan="2" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
     }
 
