@@ -1170,9 +1170,10 @@ export default async function handler(req, res) {
             const oid = Number(order_id);
 
             // linhas atuais do pedido: só escreve quantidade nas linhas que realmente mudaram
-            const atuais = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], { fields: ["id", "product_uom_qty"] });
+            const atuais = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], { fields: ["id", "product_uom_qty", "qty_delivered"] });
             const qtdAtual = {};
-            (atuais || []).forEach(l => { qtdAtual[l.id] = l.product_uom_qty; });
+            const entregueAtual = {};
+            (atuais || []).forEach(l => { qtdAtual[l.id] = l.product_uom_qty; entregueAtual[l.id] = Number(l.qty_delivered) || 0; });
 
             const cmds = [];
             for (const rid of (removed_line_ids || [])) {
@@ -1190,6 +1191,40 @@ export default async function handler(req, res) {
                         price_unit: Number(l.price),
                         discount: Number(l.discount) || 0
                     }]);
+                }
+            }
+
+            // O Odoo não deixa reduzir/remover no pedido o que já foi entregue. Então, ANTES de alterar o pedido,
+            // espelha a redução na entrega concluída (que é editável): a quantidade da entrega passa a ser a nova.
+            const reducoes = []; // [id da linha, nova quantidade]
+            for (const rid of (removed_line_ids || [])) {
+                if ((entregueAtual[Number(rid)] || 0) > 0) reducoes.push([Number(rid), 0]);
+            }
+            for (const l of (lines || [])) {
+                if (!l.product_id || !l.id) continue;
+                const nova = Number(l.qty);
+                if (nova < (entregueAtual[Number(l.id)] || 0)) reducoes.push([Number(l.id), nova]);
+            }
+            if (reducoes.length > 0) {
+                try { await definirBloqueioEntregas(oid, false); } catch (e) { /* segue mesmo assim */ }
+                const movs = await execute("stock.move", "search_read", [[
+                    ["sale_line_id", "in", reducoes.map(r => r[0])], ["state", "=", "done"], ["picking_code", "=", "outgoing"]
+                ]], { fields: ["id", "sale_line_id"] }).catch(async () => {
+                    return await execute("stock.move", "search_read", [[["sale_line_id", "in", reducoes.map(r => r[0])], ["state", "=", "done"]]], { fields: ["id", "sale_line_id"] });
+                });
+                for (const [lid, nova] of reducoes) {
+                    for (const mv of (movs || []).filter(m => Array.isArray(m.sale_line_id) && m.sale_line_id[0] === lid)) {
+                        try {
+                            try {
+                                await execute("stock.move", "write", [[mv.id], { product_uom_qty: nova, quantity: nova }]);
+                            } catch (e1) {
+                                await execute("stock.move", "write", [[mv.id], { product_uom_qty: nova }]);
+                                await execute("stock.move", "write", [[mv.id], { quantity: nova }]);
+                            }
+                        } catch (e) {
+                            return res.status(400).json({ error: "Não foi possível reduzir a quantidade na entrega antes de alterar o pedido: " + e.message });
+                        }
+                    }
                 }
             }
 
