@@ -963,6 +963,9 @@
     }
     let availableWarehouses = [];
     let isCurrentInvoiceEditable = false;
+    // Pedido já confirmado: dá para adicionar/excluir produtos e mudar quantidades (não preço, desconto nem produto das linhas já lançadas)
+    let modoConfirmadoEditavel = false;
+    let linhasIniciais = '';
     let linesToRemove = [];
     let availableJournals = [];
     let currentTransferId = null;
@@ -1638,6 +1641,7 @@
         linesToRemove = [];
         availableProducts = [];
         isCurrentInvoiceEditable = true;
+        modoConfirmadoEditavel = false;
 
         document.getElementById('saleModalTitle').innerText = 'Novo Pedido de Venda';
         document.getElementById('ribbonPagoBadge').style.display = 'none';
@@ -1723,6 +1727,7 @@
 
             const statusMeta = getOrderStatusMeta(order.state);
             isCurrentInvoiceEditable = (order.state === 'draft' || order.state === 'sent');
+            modoConfirmadoEditavel = (order.state === 'sale' || order.state === 'done');
             const isPaid = !!invoice && (invoice.payment_state === 'paid' || invoice.payment_state === 'in_payment');
 
             document.getElementById('ribbonPagoBadge').style.display = isPaid ? 'block' : 'none';
@@ -1752,12 +1757,14 @@
             dueInput.disabled = (order.state === 'cancel');
             orderDateInput.disabled = (order.state === 'cancel');
             selectWh.disabled = !isCurrentInvoiceEditable;
-            document.getElementById('btnAddLine').style.display = isCurrentInvoiceEditable ? 'inline-block' : 'none';
+            document.getElementById('btnAddLine').style.display = (isCurrentInvoiceEditable || modoConfirmadoEditavel) ? 'inline-block' : 'none';
 
-            if (isCurrentInvoiceEditable) await carregarProdutosDoArmazem();
+            if (isCurrentInvoiceEditable || modoConfirmadoEditavel) await carregarProdutosDoArmazem();
 
-            renderLines(data.lines || [], isCurrentInvoiceEditable);
+            renderLines(data.lines || [], isCurrentInvoiceEditable, modoConfirmadoEditavel);
+            linhasIniciais = assinaturaLinhas();
             atualizarBotoesAcao(order, invoice);
+            verificarAlteracoesDatas();
 
             document.getElementById('saleModal').style.display = 'flex';
         } catch (e) {
@@ -2149,7 +2156,7 @@
         }
     });
 
-    function renderLines(lines, editavel) {
+    function renderLines(lines, editavel, qtdEditavel) {
         const tbody = document.getElementById('saleLinesBody');
 
         // lista de produtos montada UMA vez (antes era remontada em cada linha)
@@ -2170,11 +2177,11 @@
             html += `
                 <tr class="line-row" data-line-id="${line.id || ''}">
                     <td><select class="line-product" ${editavel ? '' : 'disabled'} onchange="aoSelecionarProduto(this)">${options}</select></td>
-                    <td><input type="number" class="line-qty" value="${line.product_uom_qty ?? 1}" step="any" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
+                    <td><input type="number" class="line-qty" value="${line.product_uom_qty ?? 1}" step="any" min="0" ${(editavel || qtdEditavel) ? '' : 'readonly'} oninput="recalcularTotais()"></td>
                     <td><input type="number" class="line-price" value="${line.price_unit || 0}" step="0.01" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
                     <td><input type="number" class="line-discount" value="${line.discount || 0}" step="0.01" min="0" max="100" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
                     <td class="line-subtotal" style="font-weight:bold;">R$ ${(line.price_subtotal || 0).toFixed(2)}</td>
-                    <td>${editavel ? `<button class="btn-remove-line" onclick="removerLinha(this)">×</button>` : ''}</td>
+                    <td>${(editavel || qtdEditavel) ? `<button class="btn-remove-line" onclick="removerLinha(this)">×</button>` : ''}</td>
                 </tr>
             `;
         });
@@ -2183,7 +2190,7 @@
     }
 
     function adicionarLinhaProduto() {
-        if (!isCurrentInvoiceEditable) {
+        if (!isCurrentInvoiceEditable && !modoConfirmadoEditavel) {
             console.warn('adicionarLinhaProduto: formulário não está em modo editável, linha não adicionada.');
             return;
         }
@@ -2245,6 +2252,7 @@
         });
 
         document.getElementById('saleTotalVal').innerText = `R$ ${totalGeral.toFixed(2)}`;
+        if (modoConfirmadoEditavel) verificarAlteracoesDatas();
     }
 
     function atualizarBotoesAcao(order, invoice) {
@@ -2257,7 +2265,7 @@
         if (state === 'cancel') {
             container.innerHTML += `<button class="btn-action" style="background-color: var(--warning-color);" onclick="reabrirComoOrcamento()">Reabrir como Orçamento</button>`;
         } else if (state === 'sale' || state === 'done') {
-            container.innerHTML += `<button class="btn-save" id="btnSalvarAlteracoes" style="display: none;" onclick="salvarDatasPedido()">Salvar Alterações</button>`;
+            container.innerHTML += `<button class="btn-save" id="btnSalvarAlteracoes" style="display: none;" onclick="salvarAlteracoesPedido()">Salvar Alterações</button>`;
             if (invoice) {
                 if (invoice.state === 'draft') {
                     container.innerHTML += `<button class="btn-action" style="background-color: var(--primary-color);" onclick="abrirModalFaturaDetalhe(${invoice.id})">Editar Fatura</button>`;
@@ -2414,30 +2422,38 @@
         }
     }
 
-    async function salvarDatasPedido() {
+    async function salvarAlteracoesPedido() {
+        if (!validarFormularioPedido()) return;
+        const linhas = coletarLinhasDoFormulario();
+        if (linhas.some(l => !(Number(l.qty) > 0))) {
+            alert('A quantidade de cada produto deve ser maior que zero. Para tirar um produto, use o botão ×.');
+            return;
+        }
         try {
             const res = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    action: 'update_sale_dates',
+                    action: 'update_sale_lines',
                     order_id: currentOrderId,
                     due_date: document.getElementById('saleDueDate').value,
-                    order_date: orderDateParaEnvio()
+                    order_date: orderDateParaEnvio(),
+                    lines: linhas,
+                    removed_line_ids: linesToRemove
                 })
             });
             const data = await res.json();
             if (data.success) {
-                let msg = 'Datas do pedido atualizadas!';
+                let msg = 'Pedido atualizado!';
                 if (data.warnings && data.warnings.length > 0) msg += '\n\nAtenção:\n- ' + data.warnings.join('\n- ');
                 alert(msg);
                 abrirDetalhesVenda(currentOrderId);
                 buscarVendas();
             } else {
-                alert(data.error || 'Erro ao salvar as datas do pedido.');
+                alert(data.error || 'Erro ao salvar as alterações do pedido.');
             }
         } catch (e) {
-            alert('Erro de conexão ao salvar as datas do pedido.');
+            alert('Erro de conexão ao salvar as alterações do pedido.');
         }
     }
 
@@ -2761,12 +2777,19 @@
         return inputLocalParaUtc(`${dia}T12:00`);
     }
 
+    // Resumo das linhas (para saber se algo foi adicionado, excluído ou teve a quantidade alterada)
+    function assinaturaLinhas() {
+        const linhas = coletarLinhasDoFormulario().map(l => [l.id, l.product_id, Number(l.qty), Number(l.price), Number(l.discount)]);
+        return JSON.stringify(linhas) + '|' + linesToRemove.join(',');
+    }
+
     // Mostra "Salvar Alterações" só quando Lançamento ou Vencimento foram alterados
     function verificarAlteracoesDatas() {
         const btn = document.getElementById('btnSalvarAlteracoes');
         if (!btn) return;
         const mudou = document.getElementById('saleOrderDate').value !== datasIniciais.order
-            || document.getElementById('saleDueDate').value !== datasIniciais.due;
+            || document.getElementById('saleDueDate').value !== datasIniciais.due
+            || assinaturaLinhas() !== linhasIniciais;
         btn.style.display = mudou ? 'inline-block' : 'none';
     }
 
