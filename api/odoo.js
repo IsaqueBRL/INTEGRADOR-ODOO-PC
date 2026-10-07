@@ -1067,6 +1067,15 @@ export default async function handler(req, res) {
                     return res.status(200).json({ success: true, id: orderId, warnings: ["Pedido salvo, mas não foi possível confirmá-lo: " + e.message] });
                 }
 
+                // O Odoo troca a "Data do pedido" pela data/hora da confirmação; devolve a data escolhida em "Lançamento"
+                if (order_date) {
+                    try {
+                        await execute("sale.order", "write", [[orderId], { date_order: order_date }]);
+                    } catch (e) {
+                        warnings.push("Pedido confirmado, mas não foi possível manter a data de lançamento escolhida: " + e.message);
+                    }
+                }
+
                 // Tenta validar a(s) entrega(s) geradas, definindo a quantidade feita = quantidade pedida,
                 // para baixar de fato o estoque do local/armazém escolhido
                 try {
