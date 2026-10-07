@@ -720,9 +720,9 @@
        ------------------------------------------------------------ */
     (function () {
         const nativeFetch = window.fetch.bind(window);
-        const TTL = 5 * 60 * 1000;
+        const TTL = 60 * 1000;
         const CACHEABLE = new Set(['get_sale_form_data', 'get_payment_journals', 'get_product_categories', 'get_locations']);
-        const LATEST_ONLY = new Set(['get_products', 'get_stock', 'get_sales', 'get_financial_accounts', 'get_account_statement', 'get_transfers', 'search_partners', 'get_warehouse_products', 'get_location_products']);
+        const LATEST_ONLY = new Set(['get_products', 'get_stock', 'get_sales', 'get_account_statement', 'get_transfers', 'search_partners']);
         const cache = new Map();
         const inflight = new Map();
         const controllers = new Map();
@@ -789,9 +789,11 @@
                     .finally(() => { if (controllers.get(action) === ctrl) controllers.delete(action); loadEnd(action); });
             }
 
-            if (action === 'update_product') cache.clear();
+            // qualquer ação que grava algo invalida as listas guardadas (antes só 'update_product' fazia isso)
+            const ehLeitura = /^(get_|search_)/.test(action);
+            if (!ehLeitura) cache.clear();
             loadStart(action);
-            return nativeFetch(url, opts).finally(() => loadEnd(action));
+            return nativeFetch(url, opts).finally(() => { if (!ehLeitura) cache.clear(); loadEnd(action); });
         };
 
         // Pré-carga: acorda o servidor e deixa as listas de apoio prontas (Nova Venda / Pagar abrem na hora)
@@ -1040,6 +1042,7 @@
 
     // Abre a tela de Produtos sem carregar nada: o usuário escolhe os filtros primeiro
     function abrirTelaProdutos() {
+        todasCategoriasProduto = null;
         mostrarTela('produtosSection');
         document.getElementById('searchInput').value = '';
         document.getElementById('categoryFilter').value = '';
@@ -1792,7 +1795,6 @@
     }
 
     async function carregarDiarios() {
-        if (availableJournals.length > 0) return availableJournals;
         try {
             const res = await fetch('/api/odoo', {
                 method: 'POST',
