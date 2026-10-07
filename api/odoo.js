@@ -207,7 +207,38 @@ export default async function handler(req, res) {
             }
         };
 
-        // Regra: entrega desbloqueada enquanto a fatura não estiver paga; trancada quando todas as
+        // Trava/destrava o PEDIDO DE VENDA (botões "Travar"/"Destravar" do Odoo).
+        // Pedido destravado = dá para adicionar/excluir produtos e mudar quantidades.
+        const definirBloqueioPedido = async (orderId, bloquear) => {
+            const oid = Number(orderId);
+            const st = await execute("sale.order", "read", [[oid]], { fields: ["state"] });
+            if (!st || !st[0] || st[0].state === "cancel" || st[0].state === "draft" || st[0].state === "sent") return;
+
+            let atual;
+            let usaCampo = true;
+            try {
+                // Odoo 17.2+/18/19: campo "locked" (o estado continua "Pedido de venda")
+                const r = await execute("sale.order", "read", [[oid]], { fields: ["locked"] });
+                atual = !!(r && r[0] && r[0].locked);
+            } catch (e) {
+                // Odoo mais antigo: pedido travado = estado "done"
+                usaCampo = false;
+                atual = st[0].state === "done";
+            }
+            if (atual === !!bloquear) return;
+
+            if (usaCampo) {
+                try {
+                    await execute("sale.order", "write", [[oid], { locked: !!bloquear }]);
+                } catch (e) {
+                    await execute("sale.order", bloquear ? "action_lock" : "action_unlock", [[oid]]);
+                }
+            } else {
+                await execute("sale.order", bloquear ? "action_done" : "action_unlock", [[oid]]);
+            }
+        };
+
+        // Regra: entrega e pedido desbloqueados enquanto a fatura não estiver paga; trancada quando todas as
         // faturas (não canceladas) do pedido estiverem pagas.
         const sincronizarBloqueioEntregas = async (invoiceId) => {
             const pedidos = await execute("sale.order", "search_read", [[["invoice_ids", "in", [Number(invoiceId)]]]], { fields: ["id", "invoice_ids", "state"] });
@@ -216,6 +247,7 @@ export default async function handler(req, res) {
                 const faturas = await execute("account.move", "search_read", [[["id", "in", ped.invoice_ids], ["state", "!=", "cancel"]]], { fields: ["id", "payment_state"] });
                 const pago = (faturas || []).length > 0 && faturas.every(f => f.payment_state === "paid" || f.payment_state === "in_payment");
                 await definirBloqueioEntregas(ped.id, pago);
+                await definirBloqueioPedido(ped.id, pago);
             }
         };
 
@@ -844,11 +876,16 @@ export default async function handler(req, res) {
                     warnings.push("Não foi possível localizar a entrega gerada pelo pedido.");
                 }
 
-                // Deixa a entrega concluída DESBLOQUEADA (só é trancada quando a fatura for paga)
+                // Deixa a entrega concluída e o pedido DESBLOQUEADOS (só travam quando a fatura for paga)
                 try {
                     await definirBloqueioEntregas(orderId, false);
                 } catch (e) {
                     warnings.push("Pedido confirmado, mas não foi possível deixar a entrega desbloqueada: " + e.message);
+                }
+                try {
+                    await definirBloqueioPedido(orderId, false);
+                } catch (e) {
+                    warnings.push("Pedido confirmado, mas não foi possível deixar o pedido destravado: " + e.message);
                 }
 
                 // Gera a fatura em rascunho (equivalente a escolher "Fatura normal" e "Criar Rascunho" no Odoo).
