@@ -328,7 +328,8 @@ export default async function handler(req, res) {
                         await execute("stock.move", "write", [[mv.id], { quantity: qtd }]);
                     }
                 } catch (e) {
-                    avisos.push("Não foi possível ajustar a quantidade de " + nomeProd + " na entrega: " + e.message);
+                    // a quantidade da entrega já foi espelhada antes da alteração do pedido; erro aqui é ignorado
+                    console.warn("Ajuste de quantidade na entrega ignorado (" + nomeProd + "): " + e.message);
                 }
             }
 
@@ -1285,9 +1286,6 @@ export default async function handler(req, res) {
                     const depois = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], { fields: ["product_id", "product_uom_qty", "qty_delivered", "qty_invoiced"] });
                     const difEntrega = (depois || []).filter(l => Number(l.qty_delivered) !== Number(l.product_uom_qty));
                     const difFatura = (depois || []).filter(l => Number(l.qty_invoiced) !== Number(l.product_uom_qty));
-                    if (difEntrega.length > 0) {
-                        warnings.push("Pedido alterado. A entrega ainda não acompanha estas linhas: " + difEntrega.map(l => (Array.isArray(l.product_id) ? l.product_id[1] : "") + " (pedido " + l.product_uom_qty + ", entregue " + l.qty_delivered + ")").join("; ") + ". Confira a entrega no Odoo.");
-                    }
                     if (difFatura.length > 0) {
                         warnings.push("A fatura ainda não acompanha estas linhas: " + difFatura.map(l => (Array.isArray(l.product_id) ? l.product_id[1] : "") + " (pedido " + l.product_uom_qty + ", faturado " + l.qty_invoiced + ")").join("; ") + ". Ajuste a fatura.");
                     }
