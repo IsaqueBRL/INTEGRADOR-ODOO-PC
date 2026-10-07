@@ -209,6 +209,9 @@
         .prod-picker-btn .pp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .prod-picker-btn .pp-name.placeholder { color: #999; }
         .prod-picker-btn .pp-qty { font-family: monospace; font-size: 12px; background: #eee; color: #444; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+        .line-stock-cell { text-align: left; }
+        .line-stock-badge { display: inline-block; min-width: 26px; text-align: center; font-weight: bold; font-size: 13px; background: #e8edf2; color: #333; padding: 3px 9px; border-radius: 8px; }
+        .line-stock-badge.zero { background: #fde8e8; color: var(--danger-color); }
         .prod-picker-btn::after { content: '▾'; color: #777; }
         #prodPickerPanel { position: fixed; z-index: 5000; background: #fff; border: 1px solid var(--primary-color); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.25); display: none; flex-direction: column; overflow: hidden; }
         #prodPickerPanel input { margin: 8px; width: calc(100% - 16px); box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; }
@@ -610,6 +613,7 @@
                 <thead>
                     <tr>
                         <th>PRODUTO</th>
+                        <th style="width: 80px;">ESTOQUE</th>
                         <th style="width: 90px;">QTD</th>
                         <th style="width: 110px;">PREÇO UNIT.</th>
                         <th style="width: 80px;">DESC. %</th>
@@ -964,6 +968,28 @@
         });
     }
 
+    // Coluna ESTOQUE da linha: estoque atual do produto escolhido, no local de estoque do pedido
+    function atualizarEstoqueLinha(row) {
+        if (!row) return;
+        const badge = row.querySelector('.line-stock-badge');
+        const sel = row.querySelector('.line-product');
+        if (!badge || !sel) return;
+        const id = sel.value;
+        let texto = '–', cor = '';
+        if (id) {
+            const p = availableProducts.find(x => String(x.id) === String(id));
+            if (p && p.stock_qty !== undefined && p.stock_qty !== null) {
+                const q = Number(p.stock_qty);
+                texto = String(q);
+                if (q <= 0) cor = 'zero';
+            } else if (availableProducts.length > 0) {
+                texto = '0'; cor = 'zero'; // fora da lista do local = sem estoque nele
+            }
+        }
+        badge.textContent = texto;
+        badge.className = 'line-stock-badge' + (cor ? ' ' + cor : '');
+    }
+
     function atualizarBotaoProduto(sel) {
         const btn = sel._ppBtn;
         if (!btn) return;
@@ -973,9 +999,9 @@
         if (!it) {
             btn.innerHTML = '<span class="pp-name placeholder">Selecione um produto...</span>';
         } else {
-            const qtd = it.semEstoque ? 'sem estoque' : (it.qtd !== null ? `${it.qtd} un.` : '');
-            btn.innerHTML = `<span class="pp-name">${escapa(it.nome)}</span>${qtd ? `<span class="pp-qty">${qtd}</span>` : ''}`;
+            btn.innerHTML = `<span class="pp-name">${escapa(it.nome)}</span>`;
         }
+        atualizarEstoqueLinha(sel.closest('tr'));
     }
 
     function melhorarSelectsProdutoVenda() {
@@ -2333,6 +2359,7 @@
             html += `
                 <tr class="line-row" data-line-id="${line.id || ''}">
                     <td><select class="line-product" ${editavel ? '' : 'disabled'} onchange="aoSelecionarProduto(this)">${options}</select></td>
+                    <td class="line-stock-cell"><span class="line-stock-badge">–</span></td>
                     <td><input type="number" class="line-qty" value="${line.product_uom_qty ?? 1}" step="any" min="0" ${(editavel || qtdEditavel) ? '' : 'readonly'} oninput="recalcularTotais()"></td>
                     <td><input type="number" class="line-price" value="${line.price_unit || 0}" step="0.01" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
                     <td><input type="number" class="line-discount" value="${line.discount || 0}" step="0.01" min="0" max="100" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
@@ -2366,6 +2393,7 @@
         tr.setAttribute('data-line-id', '');
         tr.innerHTML = `
             <td><select class="line-product" onchange="aoSelecionarProduto(this)">${options}</select></td>
+            <td class="line-stock-cell"><span class="line-stock-badge">–</span></td>
             <td><input type="number" class="line-qty" value="1" step="1" oninput="recalcularTotais()"></td>
             <td><input type="number" class="line-price" value="0.00" step="0.01" oninput="recalcularTotais()"></td>
             <td><input type="number" class="line-discount" value="0" step="0.01" min="0" max="100" oninput="recalcularTotais()"></td>
