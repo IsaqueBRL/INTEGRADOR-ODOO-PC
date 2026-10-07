@@ -731,8 +731,27 @@
         const bar = document.createElement('div');
         bar.style.cssText = 'position:fixed;top:0;left:0;height:3px;width:0;background:#714B67;z-index:99999;opacity:0;transition:width .4s ease,opacity .25s ease;pointer-events:none;';
         document.addEventListener('DOMContentLoaded', () => document.body.appendChild(bar));
-        const loadStart = () => { if (pending++ === 0) { bar.style.opacity = '1'; bar.style.width = '70%'; } };
-        const loadEnd = () => { if (--pending <= 0) { pending = 0; bar.style.width = '100%'; setTimeout(() => { if (!pending) { bar.style.opacity = '0'; bar.style.width = '0'; } }, 250); } };
+
+        // Círculo de carregamento no centro da tela (bloqueia cliques até terminar). Só aparece se demorar um pouco.
+        const QUIET = new Set(['search_partners', 'get_sale_form_data', 'get_payment_journals']);
+        const style = document.createElement('style');
+        style.textContent = '@keyframes odooSpin{to{transform:rotate(360deg)}}';
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:rgba(255,255,255,.55);backdrop-filter:blur(1px);cursor:wait;';
+        overlay.innerHTML = '<div style="width:56px;height:56px;border:6px solid #e3d6df;border-top-color:#714B67;border-radius:50%;animation:odooSpin .8s linear infinite;"></div><div style="font-weight:bold;color:#714B67;font-size:15px;text-shadow:0 0 6px #fff;">Carregando... aguarde</div>';
+        document.addEventListener('DOMContentLoaded', () => { document.head.appendChild(style); document.body.appendChild(overlay); });
+        let spinCount = 0, spinTimer = null;
+        const spinStart = (action) => {
+            if (QUIET.has(action)) return;
+            if (spinCount++ === 0) spinTimer = setTimeout(() => { overlay.style.display = 'flex'; }, 150);
+        };
+        const spinEnd = (action) => {
+            if (QUIET.has(action)) return;
+            if (--spinCount <= 0) { spinCount = 0; clearTimeout(spinTimer); overlay.style.display = 'none'; }
+        };
+
+        const loadStart = (action) => { spinStart(action); if (pending++ === 0) { bar.style.opacity = '1'; bar.style.width = '70%'; } };
+        const loadEnd = (action) => { spinEnd(action); if (--pending <= 0) { pending = 0; bar.style.width = '100%'; setTimeout(() => { if (!pending) { bar.style.opacity = '0'; bar.style.width = '0'; } }, 250); } };
         const mk = ({ text, status }) => new Response(text, { status, headers: { 'Content-Type': 'application/json' } });
 
         window.fetch = function (url, opts) {
@@ -744,14 +763,14 @@
                 const hit = cache.get(action);
                 if (hit && hit.exp > Date.now()) return Promise.resolve(mk(hit));
                 if (inflight.has(action)) return inflight.get(action).then(mk);
-                loadStart();
+                loadStart(action);
                 const p = nativeFetch(url, opts)
                     .then(async r => {
                         const text = await r.text();
                         if (r.ok) cache.set(action, { exp: Date.now() + TTL, text, status: r.status });
                         return { text, status: r.status };
                     })
-                    .finally(() => { inflight.delete(action); loadEnd(); });
+                    .finally(() => { inflight.delete(action); loadEnd(action); });
                 inflight.set(action, p);
                 return p.then(mk);
             }
@@ -760,19 +779,19 @@
                 if (controllers.has(action)) controllers.get(action).abort();
                 const ctrl = new AbortController();
                 controllers.set(action, ctrl);
-                loadStart();
+                loadStart(action);
                 return nativeFetch(url, { ...opts, signal: ctrl.signal })
                     .catch(err => {
                         // busca substituída por uma mais nova: a tela será atualizada pela busca nova
                         if (err && err.name === 'AbortError') return new Promise(() => {});
                         throw err;
                     })
-                    .finally(() => { if (controllers.get(action) === ctrl) controllers.delete(action); loadEnd(); });
+                    .finally(() => { if (controllers.get(action) === ctrl) controllers.delete(action); loadEnd(action); });
             }
 
             if (action === 'update_product') cache.clear();
-            loadStart();
-            return nativeFetch(url, opts).finally(loadEnd);
+            loadStart(action);
+            return nativeFetch(url, opts).finally(() => loadEnd(action));
         };
 
         // Pré-carga: acorda o servidor e deixa as listas de apoio prontas (Nova Venda / Pagar abrem na hora)
