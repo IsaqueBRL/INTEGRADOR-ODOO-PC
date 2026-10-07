@@ -209,6 +209,15 @@
         .prod-picker-btn .pp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .prod-picker-btn .pp-name.placeholder { color: #999; }
         .prod-picker-btn .pp-qty { font-family: monospace; font-size: 12px; background: #eee; color: #444; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+        #saleModal thead th { white-space: nowrap; vertical-align: middle; text-align: left; }
+        #saleModal thead th::after { margin-left: 4px; }
+        .sale-totals { margin-top: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 15px; }
+        .sale-totals > div { display: flex; justify-content: flex-end; gap: 10px; }
+        .sale-totals span { color: #555; font-weight: 600; }
+        .sale-totals b { min-width: 110px; text-align: right; color: var(--primary-color); }
+        .sale-totals b.desc { color: var(--danger-color); }
+        .sale-totals .liquido { font-size: 18px; border-top: 1px solid var(--border-color); padding-top: 4px; margin-top: 2px; }
+        .sale-totals .liquido span { color: #222; font-weight: bold; }
         .desc-wrap { display: flex; gap: 4px; align-items: center; }
         .desc-wrap .line-discount { width: 80px; min-width: 0; }
         .desc-wrap .line-discount-type { width: 62px; padding: 8px 4px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; background: #fff; cursor: pointer; }
@@ -617,11 +626,11 @@
                 <thead>
                     <tr>
                         <th>PRODUTO</th>
-                        <th style="width: 80px;">ESTOQUE</th>
-                        <th style="width: 90px;">QTD</th>
-                        <th style="width: 110px;">PREÇO UNIT.</th>
-                        <th style="width: 150px;">DESCONTO</th>
-                        <th>TOTAL</th>
+                        <th style="width: 110px;">ESTOQUE</th>
+                        <th style="width: 100px;">QTD</th>
+                        <th style="width: 130px;">PREÇO UNIT.</th>
+                        <th style="width: 170px;">DESCONTO</th>
+                        <th style="width: 120px;">TOTAL</th>
                         <th style="width: 40px;"></th>
                     </tr>
                 </thead>
@@ -631,8 +640,10 @@
 
         <button id="btnAddLine" class="btn-add-line" onclick="adicionarLinhaProduto()">Adicionar uma linha</button>
 
-        <div style="text-align: right; margin-top: 10px; font-size: 16px; font-weight: bold;">
-            Valor Total: <span id="saleTotalVal" style="color: var(--primary-color);">R$ 0.00</span>
+        <div class="sale-totals">
+            <div><span>Valor Total:</span> <b id="saleTotalVal">R$ 0.00</b></div>
+            <div><span>Total de Desconto:</span> <b id="saleTotalDesc" class="desc">R$ 0.00</b></div>
+            <div class="liquido"><span>Total Líquido:</span> <b id="saleTotalLiq">R$ 0.00</b></div>
         </div>
 
         <div class="modal-actions" id="saleModalActions"></div>
@@ -2460,17 +2471,22 @@
     }
 
     function recalcularTotais() {
-        let totalGeral = 0;
+        let totalBruto = 0, totalLiquido = 0;
         document.querySelectorAll('#saleLinesBody .line-row').forEach(row => {
             const qty = parseFloat(row.querySelector('.line-qty').value) || 0;
             const price = parseFloat(row.querySelector('.line-price').value) || 0;
             const disc = descontoPercentualDaLinha(row);
-            const subtotal = qty * price * (1 - disc / 100);
+            const bruto = qty * price;
+            const subtotal = bruto * (1 - disc / 100);
             row.querySelector('.line-subtotal').innerText = `R$ ${subtotal.toFixed(2)}`;
-            totalGeral += subtotal;
+            totalBruto += bruto;
+            totalLiquido += subtotal;
         });
 
-        document.getElementById('saleTotalVal').innerText = `R$ ${totalGeral.toFixed(2)}`;
+        // Resumo só de apresentação (não é enviado ao Odoo)
+        document.getElementById('saleTotalVal').innerText = `R$ ${totalBruto.toFixed(2)}`;
+        document.getElementById('saleTotalDesc').innerText = `R$ ${(totalBruto - totalLiquido).toFixed(2)}`;
+        document.getElementById('saleTotalLiq').innerText = `R$ ${totalLiquido.toFixed(2)}`;
         if (modoConfirmadoEditavel) verificarAlteracoesDatas();
     }
 
