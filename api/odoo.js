@@ -401,6 +401,67 @@ export default async function handler(req, res) {
             await execute("account.move", "write", [[Number(invoiceId)], { invoice_date_due: dueDate }]);
         };
 
+        // Mantém a(s) fatura(s) PROVISÓRIA(S) (rascunho) do pedido idênticas às linhas do pedido de venda:
+        // atualiza quantidade/preço/desconto, cria as linhas novas e apaga as que saíram do pedido.
+        // Faturas já lançadas (posted) nunca são mexidas aqui.
+        const sincronizarFaturaProvisoriaComPedido = async (orderId) => {
+            const oid = Number(orderId);
+            const ped = await execute("sale.order", "read", [[oid]], { fields: ["invoice_ids"] });
+            const ids = (ped && ped[0] && ped[0].invoice_ids) || [];
+            if (ids.length === 0) return;
+
+            const rascunhos = await execute("account.move", "search_read", [[["id", "in", ids], ["state", "=", "draft"], ["move_type", "=", "out_invoice"]]], { fields: ["id"] });
+            if (!rascunhos || rascunhos.length === 0) return;
+
+            const sols = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], {
+                fields: ["id", "product_id", "name", "product_uom_qty", "price_unit", "discount", "tax_id", "product_uom"]
+            });
+            const solIds = new Set((sols || []).map(s => s.id));
+            const diferente = (a, b) => Math.abs((Number(a) || 0) - (Number(b) || 0)) > 0.000001;
+
+            for (const f of rascunhos) {
+                const linhas = await execute("account.move.line", "search_read", [[["move_id", "=", f.id], ["display_type", "=", "product"]]], {
+                    fields: ["id", "sale_line_ids", "quantity", "price_unit", "discount"]
+                });
+
+                const cmds = [];
+                const porSol = {};
+                for (const l of (linhas || [])) {
+                    const solId = (l.sale_line_ids || []).find(id => solIds.has(id));
+                    if (solId && !porSol[solId]) porSol[solId] = l;
+                    else cmds.push([2, l.id, 0]); // linha que saiu do pedido (ou duplicada)
+                }
+
+                for (const s of (sols || [])) {
+                    const l = porSol[s.id];
+                    if (l) {
+                        const vals = {};
+                        if (diferente(l.quantity, s.product_uom_qty)) vals.quantity = s.product_uom_qty;
+                        if (diferente(l.price_unit, s.price_unit)) vals.price_unit = s.price_unit;
+                        if (diferente(l.discount, s.discount)) vals.discount = s.discount || 0;
+                        if (Object.keys(vals).length > 0) cmds.push([1, l.id, vals]);
+                    } else {
+                        const vals = await onlyExistingFields("account.move.line", {
+                            product_id: Array.isArray(s.product_id) ? s.product_id[0] : s.product_id,
+                            name: s.name,
+                            quantity: s.product_uom_qty,
+                            price_unit: s.price_unit,
+                            discount: s.discount || 0,
+                            product_uom_id: Array.isArray(s.product_uom) ? s.product_uom[0] : undefined,
+                            tax_ids: [[6, 0, s.tax_id || []]],
+                            sale_line_ids: [[6, 0, [s.id]]]
+                        });
+                        cmds.push([0, 0, vals]);
+                    }
+                }
+
+                if (cmds.length > 0) {
+                    await execute("account.move", "write", [[f.id], { invoice_line_ids: cmds }]);
+                }
+                await applyForcedAccountToInvoice(f.id);
+            }
+        };
+
         // Devolve ao estoque de origem os itens de todas as entregas JÁ CONCLUÍDAS de um pedido
         // (mesmo processo manual do Odoo: entrega > "Devolução" > criar devolução > "Validar" o recebimento).
         // Só devolve o que ainda não foi devolvido, então chamar de novo não duplica a devolução.
@@ -650,8 +711,10 @@ export default async function handler(req, res) {
         }
 
         // AÇÃO: REGISTRAR PAGAMENTO DA FATURA
+        // Se a fatura ainda estiver PROVISÓRIA (rascunho), ela só é lançada aqui, junto com o pagamento.
+        // Se qualquer etapa falhar depois de lançar, a fatura volta para Provisória.
         if (action === "register_payment") {
-            const { order_id, journal_id, amount, payment_date } = body;
+            const { order_id, journal_id, amount, payment_date, invoice_date } = body;
             if (!order_id || !journal_id || !amount) {
                 return res.status(400).json({ error: "Campos obrigatórios não informados." });
             }
@@ -662,30 +725,46 @@ export default async function handler(req, res) {
                 return res.status(400).json({ error: "Conta inválida: só são permitidas contas do tipo Banco e caixa." });
             }
 
-            const wizardId = await execute("account.payment.register", "create", [{
-                journal_id: Number(journal_id),
-                amount: Number(amount),
-                payment_date: payment_date || false
-            }], {
-                context: {
-                    active_model: "account.move",
-                    active_ids: [Number(order_id)]
-                }
-            });
+            const invoiceId = Number(order_id);
+            const faturas = await execute("account.move", "read", [[invoiceId]], { fields: ["state"] });
+            if (!faturas || faturas.length === 0) return res.status(404).json({ error: "Fatura não encontrada." });
 
-            if (wizardId) {
-                await execute("account.payment.register", "action_create_payments", [[wizardId]], {
-                    context: {
-                        active_model: "account.move",
-                        active_ids: [Number(order_id)]
+            let lancadaAgora = false;
+            try {
+                if (faturas[0].state === "draft") {
+                    // garante que a fatura reflete o pedido antes de lançar
+                    const peds = await execute("sale.order", "search_read", [[["invoice_ids", "in", [invoiceId]]]], { fields: ["id"] });
+                    for (const p of (peds || [])) await sincronizarFaturaProvisoriaComPedido(p.id);
+
+                    if (invoice_date) {
+                        await execute("account.move", "write", [[invoiceId], { invoice_date }]);
                     }
-                });
-                // Fatura paga => tranca a entrega do pedido
-                try { await sincronizarBloqueioEntregas(Number(order_id)); } catch (e) { /* melhor esforço */ }
-                return res.status(200).json({ success: true });
-            } else {
-                return res.status(500).json({ error: "Não foi possível gerar o pagamento no Odoo." });
+                    await execute("account.move", "action_post", [[invoiceId]]);
+                    lancadaAgora = true;
+                } else if (faturas[0].state === "cancel") {
+                    return res.status(400).json({ error: "Esta fatura está cancelada." });
+                }
+
+                const ctx = { active_model: "account.move", active_ids: [invoiceId] };
+                const wizardId = await execute("account.payment.register", "create", [{
+                    journal_id: Number(journal_id),
+                    amount: Number(amount),
+                    payment_date: payment_date || false
+                }], { context: ctx });
+
+                if (!wizardId) throw new Error("Não foi possível gerar o pagamento no Odoo.");
+
+                await execute("account.payment.register", "action_create_payments", [[wizardId]], { context: ctx });
+            } catch (e) {
+                if (lancadaAgora) {
+                    try { await execute("account.move", "button_draft", [[invoiceId]]); } catch (e2) { /* melhor esforço */ }
+                }
+                return res.status(500).json({ error: "Não foi possível registrar o pagamento: " + e.message + (lancadaAgora ? " A fatura continua Provisória." : "") });
             }
+
+            // Fatura paga => tranca a entrega do pedido
+            try { await sincronizarBloqueioEntregas(invoiceId); } catch (e) { /* melhor esforço */ }
+            return res.status(200).json({ success: true });
         }
 
         // AÇÃO: BUSCAR CONTAS FINANCEIRAS E SALDO
@@ -1129,6 +1208,15 @@ export default async function handler(req, res) {
                     avisosEntrega.forEach(a => warnings.push(a));
                 } catch (e) {
                     warnings.push("Pedido alterado, mas não foi possível ajustar a entrega: " + e.message);
+                }
+            }
+
+            // Fatura provisória acompanha o pedido (a fatura só é lançada quando o pagamento for confirmado)
+            if (cmds.length > 0) {
+                try {
+                    await sincronizarFaturaProvisoriaComPedido(oid);
+                } catch (e) {
+                    warnings.push("Pedido alterado, mas não foi possível atualizar a fatura provisória: " + e.message);
                 }
             }
 
