@@ -568,7 +568,11 @@
                 <input type="hidden" id="saleCustomerId">
                 <div id="partnerDropdown" class="partner-dropdown"></div>
             </div>
-            <div style="flex: 1; min-width: 180px;">
+            <div style="flex: 1; min-width: 190px;">
+                <label>Lançamento</label>
+                <input type="datetime-local" id="saleOrderDate">
+            </div>
+            <div style="flex: 1; min-width: 160px;">
                 <label>Vencimento</label>
                 <input type="date" id="saleDueDate">
             </div>
@@ -1650,6 +1654,9 @@
         const hoje = new Date();
         dueInput.value = `${hoje.getFullYear()}-${String(hoje.getMonth() + 1).padStart(2, '0')}-${String(hoje.getDate()).padStart(2, '0')}`;
         dueInput.disabled = false;
+        const orderDateInput = document.getElementById('saleOrderDate');
+        orderDateInput.value = utcParaInputLocal(null);
+        orderDateInput.disabled = false;
 
         try {
             const res = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'get_sale_form_data' }) });
@@ -1726,6 +1733,8 @@
             // Vencimento: se já existe fatura, vale a data de vencimento dela; senão, a guardada no pedido
             const dueInput = document.getElementById('saleDueDate');
             dueInput.value = (invoice && invoice.invoice_date_due) ? invoice.invoice_date_due : (order.validity_date || '');
+            const orderDateInput = document.getElementById('saleOrderDate');
+            orderDateInput.value = utcParaInputLocal(order.date_order);
 
             const selectWh = document.getElementById('saleWarehouse');
             selectWh.innerHTML = '';
@@ -1736,7 +1745,9 @@
             });
 
             document.getElementById('saleCustomerInput').disabled = !isCurrentInvoiceEditable;
-            dueInput.disabled = !isCurrentInvoiceEditable;
+            // Lançamento e vencimento podem ser alterados mesmo depois de confirmado (só não no cancelado)
+            dueInput.disabled = (order.state === 'cancel');
+            orderDateInput.disabled = (order.state === 'cancel');
             selectWh.disabled = !isCurrentInvoiceEditable;
             document.getElementById('btnAddLine').style.display = isCurrentInvoiceEditable ? 'inline-block' : 'none';
 
@@ -2243,6 +2254,7 @@
         if (state === 'cancel') {
             container.innerHTML += `<button class="btn-action" style="background-color: var(--warning-color);" onclick="reabrirComoOrcamento()">Reabrir como Orçamento</button>`;
         } else if (state === 'sale' || state === 'done') {
+            container.innerHTML += `<button class="btn-save" onclick="salvarDatasPedido()">Salvar Datas</button>`;
             if (invoice) {
                 if (invoice.state === 'draft') {
                     container.innerHTML += `<button class="btn-action" style="background-color: var(--primary-color);" onclick="abrirModalFaturaDetalhe(${invoice.id})">Editar Fatura</button>`;
@@ -2399,6 +2411,33 @@
         }
     }
 
+    async function salvarDatasPedido() {
+        try {
+            const res = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'update_sale_dates',
+                    order_id: currentOrderId,
+                    due_date: document.getElementById('saleDueDate').value,
+                    order_date: inputLocalParaUtc(document.getElementById('saleOrderDate').value)
+                })
+            });
+            const data = await res.json();
+            if (data.success) {
+                let msg = 'Datas do pedido atualizadas!';
+                if (data.warnings && data.warnings.length > 0) msg += '\n\nAtenção:\n- ' + data.warnings.join('\n- ');
+                alert(msg);
+                abrirDetalhesVenda(currentOrderId);
+                buscarVendas();
+            } else {
+                alert(data.error || 'Erro ao salvar as datas do pedido.');
+            }
+        } catch (e) {
+            alert('Erro de conexão ao salvar as datas do pedido.');
+        }
+    }
+
     async function salvarOrcamento() {
         if (!validarFormularioPedido()) return;
 
@@ -2411,6 +2450,7 @@
                     order_id: currentOrderId,
                     partner_id: document.getElementById('saleCustomerId').value,
                     due_date: document.getElementById('saleDueDate').value,
+                    order_date: inputLocalParaUtc(document.getElementById('saleOrderDate').value),
                     warehouse_id: document.getElementById('saleWarehouse').value,
                     lines: coletarLinhasDoFormulario(),
                     removed_line_ids: linesToRemove,
@@ -2443,6 +2483,7 @@
                     order_id: currentOrderId,
                     partner_id: document.getElementById('saleCustomerId').value,
                     due_date: document.getElementById('saleDueDate').value,
+                    order_date: inputLocalParaUtc(document.getElementById('saleOrderDate').value),
                     warehouse_id: document.getElementById('saleWarehouse').value,
                     lines: coletarLinhasDoFormulario(),
                     removed_line_ids: linesToRemove,
@@ -2695,6 +2736,21 @@
     }
 
     // Odoo devolve datas em UTC ("YYYY-MM-DD HH:MM:SS"); mostra no horário local, ex.: 18/09/2026 14:40
+    // "Lançamento" (data do pedido): converte entre o horário do Odoo (UTC) e o campo data/hora da tela
+    function utcParaInputLocal(valor) {
+        const d = valor ? new Date(String(valor).replace(' ', 'T') + 'Z') : new Date();
+        if (isNaN(d.getTime())) return '';
+        const p = n => String(n).padStart(2, '0');
+        return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+    }
+    function inputLocalParaUtc(valor) {
+        if (!valor) return '';
+        const d = new Date(valor);
+        if (isNaN(d.getTime())) return '';
+        const p = n => String(n).padStart(2, '0');
+        return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:00`;
+    }
+
     // Só a data (sem horas), no fuso do usuário
     function formatarSoData(valor) {
         if (!valor) return '-';
