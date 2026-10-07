@@ -413,9 +413,15 @@ export default async function handler(req, res) {
             const rascunhos = await execute("account.move", "search_read", [[["id", "in", ids], ["state", "=", "draft"], ["move_type", "=", "out_invoice"]]], { fields: ["id"] });
             if (!rascunhos || rascunhos.length === 0) return;
 
-            const sols = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], {
-                fields: ["id", "product_id", "name", "product_uom_qty", "price_unit", "discount", "tax_id", "product_uom"]
-            });
+            // Nomes dos campos mudam entre versões do Odoo (tax_id/tax_ids, product_uom/product_uom_id)
+            let defsSol = {};
+            try { defsSol = await execute("sale.order.line", "fields_get", [], { attributes: ["type"] }) || {}; } catch (e) { defsSol = {}; }
+            const campoImposto = defsSol.tax_ids ? "tax_ids" : (defsSol.tax_id ? "tax_id" : null);
+            const campoUnidade = defsSol.product_uom_id ? "product_uom_id" : (defsSol.product_uom ? "product_uom" : null);
+            const camposSol = ["id", "product_id", "name", "product_uom_qty", "price_unit", "discount"];
+            if (campoImposto) camposSol.push(campoImposto);
+            if (campoUnidade) camposSol.push(campoUnidade);
+            const sols = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], { fields: camposSol });
             const solIds = new Set((sols || []).map(s => s.id));
             const diferente = (a, b) => Math.abs((Number(a) || 0) - (Number(b) || 0)) > 0.000001;
 
@@ -437,8 +443,6 @@ export default async function handler(req, res) {
                     if (l) {
                         const vals = {};
                         if (diferente(l.quantity, s.product_uom_qty)) vals.quantity = s.product_uom_qty;
-                        if (diferente(l.price_unit, s.price_unit)) vals.price_unit = s.price_unit;
-                        if (diferente(l.discount, s.discount)) vals.discount = s.discount || 0;
                         if (Object.keys(vals).length > 0) cmds.push([1, l.id, vals]);
                     } else {
                         const vals = await onlyExistingFields("account.move.line", {
@@ -447,8 +451,8 @@ export default async function handler(req, res) {
                             quantity: s.product_uom_qty,
                             price_unit: s.price_unit,
                             discount: s.discount || 0,
-                            product_uom_id: Array.isArray(s.product_uom) ? s.product_uom[0] : undefined,
-                            tax_ids: [[6, 0, s.tax_id || []]],
+                            product_uom_id: campoUnidade && Array.isArray(s[campoUnidade]) ? s[campoUnidade][0] : undefined,
+                            tax_ids: [[6, 0, (campoImposto && s[campoImposto]) || []]],
                             sale_line_ids: [[6, 0, [s.id]]]
                         });
                         cmds.push([0, 0, vals]);
