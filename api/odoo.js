@@ -264,6 +264,136 @@ export default async function handler(req, res) {
             }
         };
 
+        // Valida um picking e responde às janelas de confirmação do Odoo (ex.: criar pendência)
+        const validarPickingComAssistentes = async (pickingId) => {
+            const vr = await execute("stock.picking", "button_validate", [[Number(pickingId)]], { context: { skip_sms: true } });
+            if (vr && typeof vr === "object" && vr.res_model) {
+                const wctx = Object.assign({}, vr.context || {}, { skip_sms: true });
+                const wid = await execute(vr.res_model, "create", [{}], { context: wctx });
+                const metodo = vr.res_model === "stock.backorder.confirmation" ? "process_cancel_backorder" : "process";
+                await execute(vr.res_model, metodo, [[wid]], { context: wctx });
+            }
+        };
+
+        // Mantém UMA ÚNICA entrega por pedido, sempre igual às linhas do pedido (produto e quantidade).
+        // 1) cancela entregas extras que o Odoo cria ao aumentar/adicionar itens;
+        // 2) ajusta a entrega concluída (desbloqueada): muda quantidades, inclui produtos novos, tira os removidos.
+        const sincronizarEntregaComPedido = async (orderId) => {
+            const oid = Number(orderId);
+            const avisos = [];
+
+            // 1) entregas extras pendentes
+            const pendentes = await execute("stock.picking", "search_read", [[
+                ["sale_id", "=", oid], ["picking_type_code", "=", "outgoing"], ["state", "not in", ["done", "cancel"]]
+            ]], { fields: ["id", "name"] });
+            for (const p of (pendentes || [])) {
+                try {
+                    await execute("stock.picking", "action_cancel", [[p.id]]);
+                } catch (e) {
+                    avisos.push("Não foi possível cancelar a entrega extra " + p.name + ": " + e.message);
+                }
+            }
+
+            // 2) entrega principal (a concluída mais antiga)
+            const feitas = await execute("stock.picking", "search_read", [[
+                ["sale_id", "=", oid], ["picking_type_code", "=", "outgoing"], ["state", "=", "done"]
+            ]], { fields: ["id", "name", "location_id", "location_dest_id", "picking_type_id", "is_locked"], order: "id asc" }).catch(() => []);
+            if (!feitas || feitas.length === 0) {
+                avisos.push("O pedido não tem entrega concluída para ajustar. Confira a entrega no Odoo.");
+                return avisos;
+            }
+            const principal = feitas[0];
+            if (feitas.length > 1) {
+                avisos.push("Este pedido tem mais de uma entrega concluída; só a " + principal.name + " foi ajustada.");
+            }
+            try { await definirBloqueioEntregas(oid, false); } catch (e) { /* segue mesmo assim */ }
+
+            const linhas = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], { fields: ["id", "product_id", "product_uom_qty"] });
+            const movimentos = await execute("stock.move", "search_read", [[["picking_id", "=", principal.id], ["state", "!=", "cancel"]]], { fields: ["id", "product_id", "product_uom_qty", "quantity", "state", "sale_line_id"] });
+
+            const idsLinhas = (linhas || []).map(l => l.id);
+            const novas = [];
+
+            for (const l of (linhas || [])) {
+                const qtd = Number(l.product_uom_qty);
+                const mv = (movimentos || []).find(m => Array.isArray(m.sale_line_id) && m.sale_line_id[0] === l.id);
+                const nomeProd = Array.isArray(l.product_id) ? l.product_id[1] : "";
+                if (!mv) { novas.push(l); continue; }
+                if (Number(mv.product_uom_qty) === qtd && Number(mv.quantity) === qtd) continue;
+                try {
+                    try {
+                        await execute("stock.move", "write", [[mv.id], { product_uom_qty: qtd, quantity: qtd }]);
+                    } catch (e1) {
+                        await execute("stock.move", "write", [[mv.id], { product_uom_qty: qtd }]);
+                        await execute("stock.move", "write", [[mv.id], { quantity: qtd }]);
+                    }
+                } catch (e) {
+                    avisos.push("Não foi possível ajustar a quantidade de " + nomeProd + " na entrega: " + e.message);
+                }
+            }
+
+            // produtos que saíram do pedido: retira da entrega (ou zera, se o Odoo não deixar excluir)
+            const orfaos = (movimentos || []).filter(m => !(Array.isArray(m.sale_line_id) && idsLinhas.includes(m.sale_line_id[0])));
+            for (const m of orfaos) {
+                const nome = Array.isArray(m.product_id) ? m.product_id[1] : "";
+                try {
+                    await execute("stock.move", "unlink", [[m.id]]);
+                } catch (e1) {
+                    try {
+                        await execute("stock.move", "write", [[m.id], { product_uom_qty: 0, quantity: 0 }]);
+                    } catch (e2) {
+                        avisos.push("Não foi possível retirar " + nome + " da entrega: " + e2.message);
+                    }
+                }
+            }
+
+            // produtos novos no pedido: entram na MESMA entrega
+            if (novas.length > 0) {
+                try {
+                    const locOrigem = Array.isArray(principal.location_id) ? principal.location_id[0] : principal.location_id;
+                    const locDestino = Array.isArray(principal.location_dest_id) ? principal.location_dest_id[0] : principal.location_dest_id;
+                    const tipoId = Array.isArray(principal.picking_type_id) ? principal.picking_type_id[0] : principal.picking_type_id;
+                    const novosIds = [];
+                    for (const l of novas) {
+                        const prodId = Array.isArray(l.product_id) ? l.product_id[0] : l.product_id;
+                        const prod = await execute("product.product", "read", [[prodId]], { fields: ["uom_id", "display_name"] });
+                        const uom = prod && prod[0] && Array.isArray(prod[0].uom_id) ? prod[0].uom_id[0] : null;
+                        const vals = await onlyExistingFields("stock.move", {
+                            picking_id: principal.id,
+                            product_id: prodId,
+                            product_uom_qty: Number(l.product_uom_qty),
+                            product_uom: uom,
+                            uom_id: uom,
+                            name: prod && prod[0] ? prod[0].display_name : "",
+                            location_id: locOrigem,
+                            location_dest_id: locDestino,
+                            picking_type_id: tipoId,
+                            sale_line_id: l.id
+                        });
+                        novosIds.push(await execute("stock.move", "create", [vals]));
+                    }
+                    await execute("stock.picking", "action_confirm", [[principal.id]]);
+                    await execute("stock.picking", "action_assign", [[principal.id]]).catch(() => {});
+                    for (const mid of novosIds) {
+                        const dem = await execute("stock.move", "read", [[mid]], { fields: ["product_uom_qty"] });
+                        const q = dem && dem[0] ? dem[0].product_uom_qty : 0;
+                        try {
+                            await execute("stock.move", "write", [[mid], { quantity: q }]);
+                        } catch (e2) {
+                            await execute("stock.move", "write", [[mid], { quantity_done: q }]).catch(() => {});
+                        }
+                    }
+                    await validarPickingComAssistentes(principal.id);
+                } catch (e) {
+                    avisos.push("Não foi possível incluir os produtos novos na entrega: " + e.message);
+                }
+            }
+
+            // a validação pode ter trancado a entrega de novo
+            try { await definirBloqueioEntregas(oid, false); } catch (e) { /* ok */ }
+            return avisos;
+        };
+
         // Coloca a data de vencimento escolhida na tela no campo "Data de vencimento" da fatura.
         // A fatura é criada sem condição de pagamento, então esse campo fica livre para receber a data.
         const aplicarVencimentoNaFatura = async (invoiceId, dueDate) => {
@@ -984,12 +1114,23 @@ export default async function handler(req, res) {
             if (order_date) vals.date_order = order_date;
             if (cmds.length > 0) vals.order_line = cmds;
             try {
-                await execute("sale.order", "write", [[oid], vals]);
+                // "skip_procurement" pede ao Odoo para não criar entrega nova a cada ajuste
+                await execute("sale.order", "write", [[oid], vals], { context: { skip_procurement: true } });
             } catch (e) {
                 return res.status(400).json({ error: "Não foi possível alterar o pedido: " + e.message });
             }
 
             const warnings = [];
+
+            // Mantém uma única entrega, igual ao pedido (produto e quantidade)
+            if (cmds.length > 0) {
+                try {
+                    const avisosEntrega = await sincronizarEntregaComPedido(oid);
+                    avisosEntrega.forEach(a => warnings.push(a));
+                } catch (e) {
+                    warnings.push("Pedido alterado, mas não foi possível ajustar a entrega: " + e.message);
+                }
+            }
 
             // O vencimento também vai para a(s) fatura(s) do pedido que não estejam canceladas
             if (due_date) {
