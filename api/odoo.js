@@ -191,6 +191,126 @@ export default async function handler(req, res) {
             return idsDepois.filter(id => !idsAntes.includes(id));
         };
 
+        // Devolve ao estoque de origem os itens de todas as entregas JÁ CONCLUÍDAS de um pedido
+        // (mesmo processo manual do Odoo: entrega > "Devolução" > criar devolução > "Validar" o recebimento).
+        // Só devolve o que ainda não foi devolvido, então chamar de novo não duplica a devolução.
+        const devolverEntregasDoPedido = async (orderId) => {
+            const oid = Number(orderId);
+            const devolvidos = [];
+            const avisos = [];
+
+            const pickings = await execute("stock.picking", "search_read", [[
+                ["sale_id", "=", oid], ["state", "=", "done"], ["picking_type_code", "=", "outgoing"]
+            ]], { fields: ["id", "name", "location_id"] });
+
+            for (const p of (pickings || [])) {
+                try {
+                    // 1) o que saiu nesta entrega
+                    let moves;
+                    try {
+                        moves = await execute("stock.move", "search_read", [[["picking_id", "=", p.id], ["state", "=", "done"]]], { fields: ["id", "quantity"] });
+                    } catch (e) {
+                        moves = await execute("stock.move", "search_read", [[["picking_id", "=", p.id], ["state", "=", "done"]]], { fields: ["id", "quantity_done"] });
+                        moves = moves.map(m => ({ id: m.id, quantity: m.quantity_done }));
+                    }
+                    const moveIds = (moves || []).map(m => m.id);
+                    if (moveIds.length === 0) continue;
+
+                    // 2) o que já foi devolvido antes (evita devolver duas vezes)
+                    const jaDevolvidos = await execute("stock.move", "search_read", [[["origin_returned_move_id", "in", moveIds], ["state", "!=", "cancel"]]], {
+                        fields: ["origin_returned_move_id", "product_uom_qty", "quantity", "state"]
+                    }).catch(() => []);
+                    const devolvidoPorMove = {};
+                    (jaDevolvidos || []).forEach(r => {
+                        const origem = Array.isArray(r.origin_returned_move_id) ? r.origin_returned_move_id[0] : r.origin_returned_move_id;
+                        const qtd = r.state === "done" ? (r.quantity || 0) : (r.product_uom_qty || 0);
+                        devolvidoPorMove[origem] = (devolvidoPorMove[origem] || 0) + qtd;
+                    });
+
+                    const restante = {};
+                    let temAlgoParaDevolver = false;
+                    moves.forEach(m => {
+                        restante[m.id] = Math.max(0, (m.quantity || 0) - (devolvidoPorMove[m.id] || 0));
+                        if (restante[m.id] > 0) temAlgoParaDevolver = true;
+                    });
+                    if (!temAlgoParaDevolver) continue;
+
+                    // 3) assistente de devolução do Odoo (botão "Devolução" da entrega)
+                    const ctx = { active_id: p.id, active_ids: [p.id], active_model: "stock.picking" };
+                    const wizardId = await execute("stock.return.picking", "create", [{ picking_id: p.id }], { context: ctx });
+
+                    // o item deve voltar para o local de onde saiu
+                    try {
+                        const w = await execute("stock.return.picking", "read", [[wizardId]], { fields: ["location_id"], context: ctx });
+                        const origemId = Array.isArray(p.location_id) ? p.location_id[0] : null;
+                        const destinoAtual = w && w[0] && Array.isArray(w[0].location_id) ? w[0].location_id[0] : null;
+                        if (origemId && destinoAtual !== origemId) {
+                            await execute("stock.return.picking", "write", [[wizardId], { location_id: origemId }], { context: ctx });
+                        }
+                    } catch (e) { /* mantém o local sugerido pelo Odoo */ }
+
+                    // quantidade a devolver em cada linha = o que saiu menos o que já voltou
+                    let wLines = await execute("stock.return.picking.line", "search_read", [[["wizard_id", "=", wizardId]]], { fields: ["id", "move_id", "product_id", "quantity"], context: ctx });
+                    if (!wLines || wLines.length === 0) {
+                        for (const m of moves) {
+                            if (restante[m.id] > 0) {
+                                await execute("stock.return.picking.line", "create", [{ wizard_id: wizardId, move_id: m.id, quantity: restante[m.id] }], { context: ctx });
+                            }
+                        }
+                    } else {
+                        for (const l of wLines) {
+                            const mid = Array.isArray(l.move_id) ? l.move_id[0] : l.move_id;
+                            const qtd = restante[mid] || 0;
+                            if (Number(l.quantity) !== qtd) {
+                                await execute("stock.return.picking.line", "write", [[l.id], { quantity: qtd }], { context: ctx });
+                            }
+                        }
+                    }
+
+                    const resultado = await execute("stock.return.picking", "action_create_returns", [[wizardId]], { context: ctx });
+                    let novoId = resultado && resultado.res_id ? Number(resultado.res_id) : null;
+                    if (!novoId) {
+                        const mv = await execute("stock.move", "search_read", [[["origin_returned_move_id", "in", moveIds], ["state", "!=", "cancel"]]], { fields: ["picking_id"], order: "id desc", limit: 1 });
+                        if (mv && mv[0] && Array.isArray(mv[0].picking_id)) novoId = mv[0].picking_id[0];
+                    }
+                    if (!novoId) throw new Error("o Odoo não informou qual recebimento de devolução foi criado");
+
+                    // 4) validar o recebimento (botão "Validar" do Odoo), com a quantidade devolvida
+                    let info = await execute("stock.picking", "read", [[novoId]], { fields: ["name", "state"] });
+                    if (info[0].state === "draft") {
+                        await execute("stock.picking", "action_confirm", [[novoId]]);
+                    }
+                    const novosMoves = await execute("stock.move", "search_read", [[["picking_id", "=", novoId]]], { fields: ["id", "product_uom_qty"] });
+                    for (const mv of (novosMoves || [])) {
+                        try {
+                            await execute("stock.move", "write", [[mv.id], { quantity: mv.product_uom_qty }]);
+                        } catch (e2) {
+                            await execute("stock.move", "write", [[mv.id], { quantity_done: mv.product_uom_qty }]).catch(() => {});
+                        }
+                    }
+
+                    const vr = await execute("stock.picking", "button_validate", [[novoId]], { context: { skip_sms: true } });
+                    // se o Odoo abrir uma janela de confirmação (ex.: criar pendência), responde por ela
+                    if (vr && typeof vr === "object" && vr.res_model) {
+                        const wctx = Object.assign({}, vr.context || {}, { skip_sms: true });
+                        const wid2 = await execute(vr.res_model, "create", [{}], { context: wctx });
+                        const metodo = vr.res_model === "stock.backorder.confirmation" ? "process_cancel_backorder" : "process";
+                        await execute(vr.res_model, metodo, [[wid2]], { context: wctx });
+                    }
+
+                    info = await execute("stock.picking", "read", [[novoId]], { fields: ["name", "state"] });
+                    if (info[0].state === "done") {
+                        devolvidos.push(info[0].name);
+                    } else {
+                        avisos.push("A devolução " + info[0].name + " foi criada, mas não foi validada. Valide-a no Odoo para o item voltar ao estoque.");
+                    }
+                } catch (e) {
+                    avisos.push("Não foi possível devolver ao estoque a entrega " + p.name + ": " + e.message + " Faça a devolução manualmente no Odoo.");
+                }
+            }
+            return { devolvidos, avisos };
+        };
+
         // Quando a geração da fatura não gera nenhuma fatura (sem lançar erro), busca o motivo
         // olhando quanto já foi pedido/entregue/faturado em cada linha, para explicar na mensagem
         const diagnosticarPedidoSemFatura = async (orderId) => {
@@ -537,7 +657,18 @@ export default async function handler(req, res) {
                 }
                 throw e;
             }
-            return res.status(200).json({ success: true });
+
+            // Pedido cancelado: devolve ao estoque de origem o que já tinha sido entregue
+            let devolvidos = [];
+            let warnings = [];
+            try {
+                const r = await devolverEntregasDoPedido(oid);
+                devolvidos = r.devolvidos;
+                warnings = r.avisos;
+            } catch (e) {
+                warnings.push("Pedido cancelado, mas não foi possível devolver o item ao estoque: " + e.message + " Faça a devolução manualmente no Odoo.");
+            }
+            return res.status(200).json({ success: true, devolvidos, warnings });
         }
 
         // AÇÃO: REABRIR PEDIDO CANCELADO/CONFIRMADO COMO ORÇAMENTO (EDITÁVEL)
