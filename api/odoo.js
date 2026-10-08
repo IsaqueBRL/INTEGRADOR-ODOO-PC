@@ -1598,7 +1598,10 @@ export default async function handler(req, res) {
                 domain.push(['state', 'in', statusGroups[body.order_status]]);
             }
             if (body.order_status === 'paid') {
-                domain.push(['invoice_ids.payment_state', 'in', ['paid', 'in_payment']]);
+                // primeiro acha as faturas pagas e depois os pedidos ligados a elas (evita buscar por caminho em campo calculado)
+                const pagas = await execute("account.move", "search_read", [[["move_type", "=", "out_invoice"], ["state", "!=", "cancel"], ["payment_state", "in", ["paid", "in_payment"]]]], { fields: ["id"], order: "id desc", limit: 1000 }).catch(() => []);
+                if (!pagas || pagas.length === 0) return res.status(200).json({ result: [] });
+                domain.push(['invoice_ids', 'in', pagas.map(m => m.id)]);
             }
             const filtraPorPagamento = body.order_status === 'paid' || body.order_status === 'sale';
 
