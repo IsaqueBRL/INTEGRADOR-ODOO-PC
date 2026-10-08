@@ -1237,10 +1237,11 @@ export default async function handler(req, res) {
             const oid = Number(order_id);
 
             // linhas atuais do pedido: só escreve quantidade nas linhas que realmente mudaram
-            const atuais = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], { fields: ["id", "product_uom_qty", "qty_delivered"] });
+            const atuais = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], { fields: ["id", "product_uom_qty", "qty_delivered", "discount"] });
             const qtdAtual = {};
             const entregueAtual = {};
-            (atuais || []).forEach(l => { qtdAtual[l.id] = l.product_uom_qty; entregueAtual[l.id] = Number(l.qty_delivered) || 0; });
+            const descAtual = {};
+            (atuais || []).forEach(l => { qtdAtual[l.id] = l.product_uom_qty; entregueAtual[l.id] = Number(l.qty_delivered) || 0; descAtual[l.id] = Number(l.discount) || 0; });
 
             const cmds = [];
             for (const rid of (removed_line_ids || [])) {
@@ -1250,7 +1251,11 @@ export default async function handler(req, res) {
                 if (!l.product_id) continue;
                 if (l.id) {
                     const nova = Number(l.qty);
-                    if (qtdAtual[Number(l.id)] !== nova) cmds.push([1, Number(l.id), { product_uom_qty: nova }]);
+                    const upd = {};
+                    if (qtdAtual[Number(l.id)] !== nova) upd.product_uom_qty = nova;
+                    const novoDesc = Number(l.discount) || 0;
+                    if (Math.abs((descAtual[Number(l.id)] || 0) - novoDesc) > 0.000001) upd.discount = novoDesc;
+                    if (Object.keys(upd).length > 0) cmds.push([1, Number(l.id), upd]);
                 } else {
                     cmds.push([0, 0, {
                         product_id: Number(l.product_id),
@@ -1260,6 +1265,26 @@ export default async function handler(req, res) {
                     }]);
                 }
             }
+
+            // Pedido BLOQUEADO não aceita mudar produto/desconto/linhas: destrava antes e trava de novo no fim
+            let estavaBloqueado = false;
+            if (cmds.length > 0) {
+                try {
+                    const info = await execute("sale.order", "read", [[oid]], { fields: ["state", "locked"] });
+                    estavaBloqueado = !!(info && info[0] && info[0].locked);
+                } catch (e) {
+                    try {
+                        const info = await execute("sale.order", "read", [[oid]], { fields: ["state"] });
+                        estavaBloqueado = !!(info && info[0] && info[0].state === "done");
+                    } catch (e2) { /* segue */ }
+                }
+                if (estavaBloqueado) {
+                    try { await execute("sale.order", "action_unlock", [[oid]]); } catch (e) { estavaBloqueado = false; }
+                }
+            }
+            const religar = async () => {
+                if (estavaBloqueado) { try { await execute("sale.order", "action_lock", [[oid]]); } catch (e) { /* ignora */ } }
+            };
 
             // O Odoo não deixa reduzir/remover no pedido o que já foi entregue. Então, ANTES de alterar o pedido,
             // espelha a redução na entrega concluída (que é editável): a quantidade da entrega passa a ser a nova.
@@ -1289,6 +1314,7 @@ export default async function handler(req, res) {
                                 await execute("stock.move", "write", [[mv.id], { quantity: nova }]);
                             }
                         } catch (e) {
+                            await religar();
                             return res.status(400).json({ error: "Não foi possível reduzir a quantidade na entrega antes de alterar o pedido: " + e.message });
                         }
                     }
@@ -1302,6 +1328,7 @@ export default async function handler(req, res) {
                 // "skip_procurement" pede ao Odoo para não criar entrega nova a cada ajuste
                 await execute("sale.order", "write", [[oid], vals], { context: { skip_procurement: true } });
             } catch (e) {
+                await religar();
                 return res.status(400).json({ error: "Não foi possível alterar o pedido: " + e.message });
             }
 
@@ -1358,6 +1385,7 @@ export default async function handler(req, res) {
                 } catch (e) { /* aviso é só informativo */ }
             }
 
+            await religar();
             return res.status(200).json({ success: true, warnings });
         }
 
@@ -1592,6 +1620,20 @@ export default async function handler(req, res) {
                 (invoices || []).forEach(inv => { invoiceMap[inv.id] = inv; });
             }
 
+            // Produtos e quantidades de cada pedido (telinha da coluna QUANTIDADE)
+            const itensPorPedido = {};
+            const orderIds = (orders || []).map(o => o.id);
+            if (orderIds.length > 0) {
+                const linhas = await execute("sale.order.line", "search_read", [[["order_id", "in", orderIds], ["display_type", "=", false]]], {
+                    fields: ["order_id", "product_id", "product_uom_qty"]
+                }).catch(() => []);
+                (linhas || []).forEach(l => {
+                    const oid = Array.isArray(l.order_id) ? l.order_id[0] : l.order_id;
+                    if (!itensPorPedido[oid]) itensPorPedido[oid] = [];
+                    itensPorPedido[oid].push({ name: Array.isArray(l.product_id) ? l.product_id[1] : "-", qty: l.product_uom_qty });
+                });
+            }
+
             const result = (orders || []).map(o => {
                 const invs = (o.invoice_ids || []).map(id => invoiceMap[id]).filter(Boolean);
                 let paymentSummary = "nao_faturado";
@@ -1606,7 +1648,7 @@ export default async function handler(req, res) {
                 let dueDate = null;
                 if (abertas.length > 0) dueDate = abertas.map(i => i.invoice_date_due).sort()[0];
                 else if (ativas.length > 0) dueDate = ativas.map(i => i.invoice_date_due).sort().pop();
-                return { ...o, payment_summary: paymentSummary, due_date: dueDate };
+                return { ...o, payment_summary: paymentSummary, due_date: dueDate, items: itensPorPedido[o.id] || [] };
             }).filter(o => {
                 if (body.order_status === 'paid') return o.payment_summary === 'pago';
                 if (body.order_status === 'sale') return o.payment_summary !== 'pago';
