@@ -99,10 +99,13 @@
         .btn-add-produto .mais { font-size: 17px; margin-right: 6px; vertical-align: -1px; opacity: .9; }
         .qtd-badge { display: inline-block; background: #eef0f3; border: 1px solid #d6dae0; border-radius: 6px; padding: 4px 10px; font-size: 12.5px; font-weight: 600; color: #444; cursor: default; white-space: nowrap; }
         .qtd-badge:hover { background: #e2e6ea; }
-        #qtdTooltip { position: fixed; z-index: 6000; display: none; background: #fff; border: 1px solid #d6dae0; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.22); padding: 8px; min-width: 260px; max-width: 380px; pointer-events: none; }
-        #qtdTooltip table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        #qtdTooltip { position: fixed; z-index: 6000; display: none; background: #fff; border: 1px solid #d6dae0; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.22); padding: 8px; width: max-content; min-width: 240px; max-width: min(380px, calc(100vw - 24px)); box-sizing: border-box; pointer-events: none; }
+        #qtdTooltip table { width: 100%; min-width: 0; border-collapse: collapse; font-size: 13px; }
+        #qtdTooltip th { cursor: default; }
+        #qtdTooltip th::after { content: none; }
+        #qtdTooltip th:hover { background: #eef0f3; }
         #qtdTooltip th { background: #eef0f3; color: #666; font-size: 11px; text-align: left; padding: 6px 8px; }
-        #qtdTooltip th:last-child, #qtdTooltip td:last-child { text-align: right; white-space: nowrap; }
+        #qtdTooltip th:last-child, #qtdTooltip td:last-child { text-align: right; white-space: nowrap; width: 1%; padding-left: 16px; }
         #qtdTooltip td { padding: 6px 8px; border-bottom: 1px solid #eee; font-weight: 600; color: #333; }
         #qtdTooltip tr:last-child td { border-bottom: none; }
         .btn-remove-line { background: none; border: none; color: var(--danger-color); font-weight: bold; cursor: pointer; font-size: 16px; }
@@ -1780,12 +1783,16 @@
             if (itens.length === 0) { tip.style.display = 'none'; return; }
             tip.innerHTML = '<table><thead><tr><th>PRODUTO</th><th>QTD.</th></tr></thead><tbody>' +
                 itens.map(i => `<tr><td>${esc(i.name)}</td><td>${esc(Number(i.qty))}x</td></tr>`).join('') + '</tbody></table>';
+            // mede fora da tela primeiro (a largura depende da posição) e só depois posiciona dentro da janela visível
+            tip.style.left = '-9999px'; tip.style.top = '0px';
             tip.style.display = 'block';
             const r = badge.getBoundingClientRect();
             const w = tip.offsetWidth, hgt = tip.offsetHeight;
-            let left = Math.min(r.left, window.innerWidth - w - 12);
+            const larguraVisivel = document.documentElement.clientWidth; // sem a barra de rolagem
+            const alturaVisivel = document.documentElement.clientHeight;
+            let left = Math.min(r.left, larguraVisivel - w - 12);
             let top = r.bottom + 6;
-            if (top + hgt > window.innerHeight - 8) top = Math.max(8, r.top - hgt - 6); // sem espaço embaixo: abre em cima
+            if (top + hgt > alturaVisivel - 8) top = Math.max(8, r.top - hgt - 6); // sem espaço embaixo: abre em cima
             tip.style.left = Math.max(8, left) + 'px';
             tip.style.top = top + 'px';
         }
@@ -1863,6 +1870,7 @@
                     </tr>
                 `;
             });
+            const tipQtd = document.getElementById('qtdTooltip'); if (tipQtd) tipQtd.style.display = 'none';
             results.innerHTML = html;
             ordenarPorDataDesc('resultsVendas');
         } catch (e) {
