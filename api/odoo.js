@@ -774,6 +774,34 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: true });
         }
 
+        // AÇÃO: CONTAS A RECEBER / A PAGAR (soma do "valor devido" das faturas e contas não canceladas e não pagas)
+        if (action === "get_receivable_payable") {
+            const hoje = body.today || new Date().toISOString().slice(0, 10);
+
+            const somar = async (tipos, tiposNegativos) => {
+                const docs = await execute("account.move", "search_read", [[
+                    ["move_type", "in", tipos],
+                    ["state", "!=", "cancel"],
+                    ["payment_state", "!=", "paid"]
+                ]], { fields: ["move_type", "amount_residual", "invoice_date_due"], limit: 5000 });
+
+                let total = 0, vencido = 0, qtd = 0;
+                for (const d of (docs || [])) {
+                    const valor = (Number(d.amount_residual) || 0) * (tiposNegativos.includes(d.move_type) ? -1 : 1);
+                    total += valor;
+                    if (valor > 0) qtd++;
+                    if (d.invoice_date_due && d.invoice_date_due < hoje) vencido += valor;
+                }
+                return { total: Math.round(total * 100) / 100, vencido: Math.round(vencido * 100) / 100, qtd };
+            };
+
+            const [receber, pagar] = await Promise.all([
+                somar(["out_invoice", "out_refund", "out_receipt"], ["out_refund"]),
+                somar(["in_invoice", "in_refund", "in_receipt"], ["in_refund"])
+            ]);
+            return res.status(200).json({ receber, pagar });
+        }
+
         // AÇÃO: BUSCAR CONTAS FINANCEIRAS E SALDO
         if (action === "get_financial_accounts") {
             const query = body.query || "";
