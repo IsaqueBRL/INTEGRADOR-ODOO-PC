@@ -1440,7 +1440,9 @@ export default async function handler(req, res) {
             const query = body.query || "";
             // Somente "Locais internos" (igual ao filtro do Odoo); local opcional (inclui sublocais)
             const locationId = Number(body.location_id) || 0;
-            const domain = [["quantity", ">", 0], ["location_id.usage", "=", "internal"]];
+            // Somente produtos com "Vendas" marcado e tipo "Mercadorias" (consu; "product" em Odoo mais antigo)
+            const domain = [["quantity", ">", 0], ["location_id.usage", "=", "internal"],
+                ["product_id.sale_ok", "=", true], ["product_id.type", "in", ["consu", "product"]]];
             if (locationId) domain.push(["location_id", "child_of", locationId]);
             if (query) domain.push(["product_id.name", "ilike", query]);
 
@@ -1449,6 +1451,79 @@ export default async function handler(req, res) {
                 limit: 100
             });
             return res.status(200).json({ result: result || [] });
+        }
+
+        // AÇÃO: PRODUTOS PARA O AJUSTE DE ESTOQUE (Vendas marcado + tipo Mercadorias)
+        if (action === "search_stock_products") {
+            const query = (body.query || "").trim();
+            const domain = [["sale_ok", "=", true], ["type", "in", ["consu", "product"]]];
+            if (query) domain.push(["name", "ilike", query]);
+            const produtos = await execute("product.product", "search_read", [domain], { fields: ["id", "display_name"], limit: 20 });
+            return res.status(200).json({ result: produtos || [] });
+        }
+
+        // AÇÃO: QUANTIDADE ATUAL DE PRODUTOS EM UM LOCAL (para mostrar no ajuste)
+        if (action === "get_stock_quantities") {
+            const locId = Number(body.location_id) || 0;
+            const ids = (body.product_ids || []).map(Number).filter(Boolean);
+            if (!locId || ids.length === 0) return res.status(200).json({ result: {} });
+            const quants = await execute("stock.quant", "search_read", [[["location_id", "=", locId], ["product_id", "in", ids]]], { fields: ["product_id", "quantity"] });
+            const mapa = {};
+            ids.forEach(i => { mapa[i] = 0; });
+            (quants || []).forEach(q => { if (Array.isArray(q.product_id)) mapa[q.product_id[0]] = (mapa[q.product_id[0]] || 0) + q.quantity; });
+            return res.status(200).json({ result: mapa });
+        }
+
+        // AÇÃO: AJUSTAR ESTOQUE (define a nova quantidade de cada produto em um local)
+        if (action === "adjust_stock") {
+            const locId = Number(body.location_id) || 0;
+            const itens = (body.items || []).filter(i => i && i.product_id && i.quantity !== "" && i.quantity !== null && !isNaN(Number(i.quantity)));
+            if (!locId) return res.status(400).json({ error: "Escolha o local do estoque." });
+            if (itens.length === 0) return res.status(400).json({ error: "Informe a nova quantidade dos produtos." });
+            if (itens.some(i => Number(i.quantity) < 0)) return res.status(400).json({ error: "A nova quantidade não pode ser negativa." });
+
+            const ctx = { inventory_mode: true };
+            const resultados = [];
+            const erros = [];
+
+            const lerQtd = async (pid) => {
+                const qs = await execute("stock.quant", "search_read", [[["location_id", "=", locId], ["product_id", "=", Number(pid)]]], { fields: ["quantity"] });
+                return (qs || []).reduce((t, q) => t + q.quantity, 0);
+            };
+
+            for (const it of itens) {
+                const pid = Number(it.product_id);
+                const nova = Number(it.quantity);
+                try {
+                    const antes = await lerQtd(pid);
+                    if (antes === nova) { resultados.push({ product_id: pid, anterior: antes, nova, alterado: false }); continue; }
+
+                    try {
+                        // mesmo caminho da tela de Inventário do Odoo: grava e aplica na hora
+                        await execute("stock.quant", "create", [{ product_id: pid, location_id: locId, inventory_quantity_auto_apply: nova }], { context: ctx });
+                    } catch (e1) {
+                        // plano B: define a quantidade contada e aplica o ajuste
+                        const qs = await execute("stock.quant", "search_read", [[["location_id", "=", locId], ["product_id", "=", pid], ["lot_id", "=", false]]], { fields: ["id"], limit: 1 });
+                        let qid;
+                        if (qs && qs[0]) {
+                            qid = qs[0].id;
+                            await execute("stock.quant", "write", [[qid], { inventory_quantity: nova }], { context: ctx });
+                        } else {
+                            qid = await execute("stock.quant", "create", [{ product_id: pid, location_id: locId, inventory_quantity: nova }], { context: ctx });
+                        }
+                        await execute("stock.quant", "action_apply_inventory", [[qid]], { context: ctx });
+                    }
+
+                    const depois = await lerQtd(pid);
+                    if (depois !== nova) {
+                        erros.push("O produto " + pid + " ficou com " + depois + " em vez de " + nova + ". Confira no Odoo.");
+                    }
+                    resultados.push({ product_id: pid, anterior: antes, nova: depois, alterado: true });
+                } catch (e) {
+                    erros.push("Não foi possível ajustar o produto " + pid + ": " + e.message);
+                }
+            }
+            return res.status(200).json({ success: erros.length === 0, results: resultados, errors: erros });
         }
 
         // AÇÃO: BUSCAR PEDIDOS DE VENDAS
