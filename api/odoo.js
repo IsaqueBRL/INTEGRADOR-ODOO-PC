@@ -12,13 +12,32 @@ let cachedUid = null;
 let uidPromise = null;
 let forcedAccountIdCache = null;
 
-async function rpc(service, method, args) {
-    const r = await fetch(ODOO_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ jsonrpc: "2.0", method: "call", params: { service, method, args }, id: Date.now() })
-    });
-    return r.json();
+// Métodos só de leitura: se o Odoo responder com página de erro (HTML), é seguro tentar de novo
+const READ_METHODS = new Set(["search_read", "read", "fields_get", "search", "search_count", "read_group", "name_search", "default_get"]);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function rpc(service, method, args, tentativa = 0) {
+    const leitura = service === "common" || (service === "object" && READ_METHODS.has(args && args[4]));
+    let status = 0, text = "";
+    try {
+        const r = await fetch(ODOO_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ jsonrpc: "2.0", method: "call", params: { service, method, args }, id: Date.now() })
+        });
+        status = r.status;
+        text = await r.text();
+    } catch (e) {
+        if (leitura && tentativa < 2) { await sleep(500 * (tentativa + 1)); return rpc(service, method, args, tentativa + 1); }
+        throw new Error("Não foi possível conectar ao Odoo: " + e.message);
+    }
+    try {
+        return JSON.parse(text);
+    } catch (e) {
+        // o Odoo devolveu uma página HTML (instabilidade/limite momentâneo) em vez de JSON
+        if (leitura && tentativa < 2) { await sleep(500 * (tentativa + 1)); return rpc(service, method, args, tentativa + 1); }
+        throw new Error("O Odoo respondeu com uma página de erro (HTTP " + status + ") em vez de dados. Tente novamente em instantes.");
+    }
 }
 
 // Autentica UMA vez e reaproveita o uid (antes eram 2 chamadas ao Odoo a cada clique)
@@ -116,6 +135,9 @@ async function onlyExistingFields(model, vals) {
     }
 }
 
+// mais tempo para a função na Vercel (a 1ª chamada "fria" + login no Odoo + consultas podia estourar o limite e devolver uma página HTML de erro)
+export const config = { maxDuration: 30 };
+
 export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Credentials', true);
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -129,7 +151,12 @@ export default async function handler(req, res) {
         return res.status(200).end();
     }
 
-    const body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    let body;
+    try {
+        body = typeof req.body === 'string' ? JSON.parse(req.body) : (req.body || {});
+    } catch (e) {
+        return res.status(400).json({ error: "Requisição inválida." });
+    }
     const action = body.action || "get_products";
     // qualquer ação que grava algo limpa as listas em cache deste servidor
     if (!/^(get_|search_)/.test(action)) _cache.clear();
