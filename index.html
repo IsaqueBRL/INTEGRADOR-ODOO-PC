@@ -844,6 +844,29 @@
         const loadEnd = (action) => { spinEnd(action); if (--pending <= 0) { pending = 0; bar.style.width = '100%'; setTimeout(() => { if (!pending) { bar.style.opacity = '0'; bar.style.width = '0'; } }, 250); } };
         const mk = ({ text, status }) => new Response(text, { status, headers: { 'Content-Type': 'application/json' } });
 
+        // Quando o servidor (Vercel/Odoo) devolve uma página HTML de erro em vez de JSON (instabilidade momentânea,
+        // servidor "dormindo"), tenta de novo sozinho nas CONSULTAS. Em gravações NÃO repete (evita lançar duas vezes).
+        const dormir = ms => new Promise(r => setTimeout(r, ms));
+        async function fetchRobusto(url, opts, action) {
+            const leitura = /^(get_|search_)/.test(action);
+            const tentativas = leitura ? 3 : 1;
+            let ultimoStatus = 502;
+            for (let i = 0; i < tentativas; i++) {
+                try {
+                    const r = await nativeFetch(url, opts);
+                    const text = await r.text();
+                    if (/^\s*[\{\[]/.test(text)) return new Response(text, { status: r.status, headers: { 'Content-Type': 'application/json' } });
+                    ultimoStatus = r.status >= 400 ? r.status : 502; // veio HTML/texto no lugar de JSON
+                } catch (e) {
+                    if (e && e.name === 'AbortError') throw e;
+                    if (i === tentativas - 1) throw e;
+                }
+                if (i < tentativas - 1) await dormir(700 * (i + 1));
+            }
+            if (leitura) throw new Error('O servidor não respondeu corretamente. Tente novamente.');
+            return new Response(JSON.stringify({ error: 'O servidor demorou ou falhou ao responder. Confira se a operação foi concluída antes de repetir.' }), { status: ultimoStatus, headers: { 'Content-Type': 'application/json' } });
+        }
+
         window.fetch = function (url, opts) {
             if (url !== '/api/odoo' || !opts || typeof opts.body !== 'string') return nativeFetch(url, opts);
             let action;
@@ -854,7 +877,7 @@
                 if (hit && hit.exp > Date.now()) return Promise.resolve(mk(hit));
                 if (inflight.has(action)) return inflight.get(action).then(mk);
                 loadStart(action);
-                const p = nativeFetch(url, opts)
+                const p = fetchRobusto(url, opts, action)
                     .then(async r => {
                         const text = await r.text();
                         if (r.ok) cache.set(action, { exp: Date.now() + TTL, text, status: r.status });
@@ -870,7 +893,7 @@
                 const ctrl = new AbortController();
                 controllers.set(action, ctrl);
                 loadStart(action);
-                return nativeFetch(url, { ...opts, signal: ctrl.signal })
+                return fetchRobusto(url, { ...opts, signal: ctrl.signal }, action)
                     .catch(err => {
                         // busca substituída por uma mais nova: a tela será atualizada pela busca nova
                         if (err && err.name === 'AbortError') return new Promise(() => {});
@@ -883,15 +906,15 @@
             const ehLeitura = /^(get_|search_)/.test(action);
             if (!ehLeitura) cache.clear();
             loadStart(action);
-            return nativeFetch(url, opts).finally(() => { if (!ehLeitura) cache.clear(); loadEnd(action); });
+            return fetchRobusto(url, opts, action).finally(() => { if (!ehLeitura) cache.clear(); loadEnd(action); });
         };
 
         // Pré-carga: acorda o servidor e deixa as listas de apoio prontas (Nova Venda / Pagar abrem na hora)
         window.addEventListener('load', () => {
             setTimeout(() => {
-                const call = action => fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) }).catch(() => {});
-                call('get_payment_journals');
-                call('get_sale_form_data');
+                const call = action => fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action }) }).then(r => r, () => {});
+                // em sequência (não ao mesmo tempo) para não acordar duas cópias do servidor juntas
+                call('get_payment_journals').then(() => call('get_sale_form_data'));
             }, 300);
         });
     })();
@@ -1024,8 +1047,10 @@
     let prodPickerSelect = null;
 
     function itensDoSelectProduto(sel) {
+        // na Transferência a lista vem do local de origem; na Venda, do armazém
+        const lista = (sel.closest && sel.closest('#transferLinesBody')) ? availableTransferProducts : availableProducts;
         return Array.from(sel.options).filter(o => o.value).map(o => {
-            const p = availableProducts.find(x => String(x.id) === String(o.value));
+            const p = lista.find(x => String(x.id) === String(o.value));
             const semEstoque = /⚠/.test(o.text);
             const nome = p ? p.display_name : o.text.replace(/ ⚠.*$/, '').replace(/\s*\(-?[\d.,]+ un\)\s*$/, '');
             const q = p && p.stock_qty !== undefined && p.stock_qty !== null ? Number(p.stock_qty) : null;
@@ -1070,7 +1095,7 @@
     }
 
     function melhorarSelectsProdutoVenda() {
-        document.querySelectorAll('#saleLinesBody .line-product').forEach(sel => {
+        document.querySelectorAll('#saleLinesBody .line-product, #transferLinesBody .line-product').forEach(sel => {
             if (!sel._ppBtn) {
                 const btn = document.createElement('button');
                 btn.type = 'button';
@@ -3323,6 +3348,7 @@
             sel.value = cur;
             if (cur && !availableTransferProducts.some(p => String(p.id) === cur)) semEstoque++;
         });
+        melhorarSelectsProdutoVenda();
         if (semEstoque > 0) {
             alert('Atenção: ' + semEstoque + ' produto(s) da transferência não têm estoque neste local (marcados com ⚠).');
         }
@@ -3385,6 +3411,7 @@
             });
             const data = await response.json();
             if (reqId !== transferenciasReqId) return;
+            if (data.error) { status.innerText = "Erro ao buscar transferências: " + data.error; results.innerHTML = ""; return; }
             const transfers = data.result || [];
 
             if (transfers.length === 0) {
@@ -3522,6 +3549,7 @@
         tbody.querySelectorAll('.line-row').forEach(row => {
             row.querySelector('.line-product').value = row.getAttribute('data-product-id');
         });
+        melhorarSelectsProdutoVenda(); // mesmo seletor com busca e coluna de estoque das Vendas
     }
 
     function adicionarLinhaTransferencia() {
@@ -3539,6 +3567,7 @@
             <td><button class="btn-remove-line" onclick="removerLinhaTransferencia(this)">×</button></td>
         `;
         tbody.appendChild(tr);
+        melhorarSelectsProdutoVenda();
         marcarAlteracaoTransferencia();
     }
 
