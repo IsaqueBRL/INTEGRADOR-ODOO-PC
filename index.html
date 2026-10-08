@@ -94,6 +94,17 @@
 
         .btn-add-line { display: inline-block; background: none; border: none; color: #00878a; font-weight: 600; font-size: 14px; cursor: pointer; margin-top: 8px; text-decoration: underline; }
         .btn-add-line:hover { color: #005658; }
+        .btn-add-produto { display: inline-block; background: #1976d2; color: #fff; border: none; border-radius: 6px; padding: 10px 16px; font-weight: 600; font-size: 14px; cursor: pointer; margin: 12px 0 0 0; }
+        .btn-add-produto:hover { background: #1259a6; }
+        .btn-add-produto .mais { font-size: 17px; margin-right: 6px; vertical-align: -1px; opacity: .9; }
+        .qtd-badge { display: inline-block; background: #eef0f3; border: 1px solid #d6dae0; border-radius: 6px; padding: 4px 10px; font-size: 12.5px; font-weight: 600; color: #444; cursor: default; white-space: nowrap; }
+        .qtd-badge:hover { background: #e2e6ea; }
+        #qtdTooltip { position: fixed; z-index: 6000; display: none; background: #fff; border: 1px solid #d6dae0; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.22); padding: 8px; min-width: 260px; max-width: 380px; pointer-events: none; }
+        #qtdTooltip table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        #qtdTooltip th { background: #eef0f3; color: #666; font-size: 11px; text-align: left; padding: 6px 8px; }
+        #qtdTooltip th:last-child, #qtdTooltip td:last-child { text-align: right; white-space: nowrap; }
+        #qtdTooltip td { padding: 6px 8px; border-bottom: 1px solid #eee; font-weight: 600; color: #333; }
+        #qtdTooltip tr:last-child td { border-bottom: none; }
         .btn-remove-line { background: none; border: none; color: var(--danger-color); font-weight: bold; cursor: pointer; font-size: 16px; }
 
         .ribbon-pago {
@@ -434,6 +445,7 @@
                         <th>STATUS</th>
                         <th>VENCIMENTO</th>
                         <th>SOBRE DIAS</th>
+                        <th>QUANTIDADE</th>
                         <th>VALOR TOTAL</th>
                     </tr>
                 </thead>
@@ -699,7 +711,7 @@
             </table>
         </div>
 
-        <button id="btnAddLine" class="btn-add-line" onclick="adicionarLinhaProduto()">Adicionar uma linha</button>
+        <div style="text-align: left;"><button id="btnAddLine" class="btn-add-produto" onclick="adicionarLinhaProduto()"><span class="mais">+</span>Adicionar Produto</button></div>
 
         <div class="sale-totals">
             <div><span>Valor Total:</span> <b id="saleTotalVal">R$ 0.00</b></div>
@@ -1755,6 +1767,38 @@
     }
 
     let vendasReqId = 0;
+    const vendasItens = {}; // produtos de cada pedido da lista (para a telinha flutuante da coluna QUANTIDADE)
+
+    // Telinha flutuante: aparece ao passar o mouse sobre "N produtos"
+    (function () {
+        const tip = document.createElement('div');
+        tip.id = 'qtdTooltip';
+        document.body.appendChild(tip);
+        const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        function mostrar(badge) {
+            const itens = vendasItens[badge.dataset.saleId] || [];
+            if (itens.length === 0) { tip.style.display = 'none'; return; }
+            tip.innerHTML = '<table><thead><tr><th>PRODUTO</th><th>QTD.</th></tr></thead><tbody>' +
+                itens.map(i => `<tr><td>${esc(i.name)}</td><td>${esc(Number(i.qty))}x</td></tr>`).join('') + '</tbody></table>';
+            tip.style.display = 'block';
+            const r = badge.getBoundingClientRect();
+            const w = tip.offsetWidth, hgt = tip.offsetHeight;
+            let left = Math.min(r.left, window.innerWidth - w - 12);
+            let top = r.bottom + 6;
+            if (top + hgt > window.innerHeight - 8) top = Math.max(8, r.top - hgt - 6); // sem espaço embaixo: abre em cima
+            tip.style.left = Math.max(8, left) + 'px';
+            tip.style.top = top + 'px';
+        }
+        document.addEventListener('mouseover', e => {
+            const b = e.target.closest && e.target.closest('.qtd-badge');
+            if (b) mostrar(b);
+        });
+        document.addEventListener('mouseout', e => {
+            const b = e.target.closest && e.target.closest('.qtd-badge');
+            if (b) tip.style.display = 'none';
+        });
+        window.addEventListener('scroll', () => { tip.style.display = 'none'; }, true);
+    })();
 
     async function buscarVendas() {
         const query = document.getElementById("searchVendasInput").value.trim();
@@ -1787,7 +1831,7 @@
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhum pedido encontrado.";
-                results.innerHTML = `<tr><td colspan="8" style="text-align: center; color: #888;">Nenhum pedido encontrado</td></tr>`;
+                results.innerHTML = `<tr><td colspan="9" style="text-align: center; color: #888;">Nenhum pedido encontrado</td></tr>`;
                 return;
             }
 
@@ -1802,6 +1846,8 @@
                 const statusMeta = getOrderStatusMeta(sale.state);
                 const stMeta = statusVendaLista(sale);
                 const dias = diasParaVencer(sale);
+                const itens = Array.isArray(sale.items) ? sale.items : [];
+                vendasItens[sale.id] = itens;
 
                 html += `
                     <tr style="cursor: pointer;" onclick="abrirDetalhesVenda(${sale.id})">
@@ -1812,6 +1858,7 @@
                         <td><span class="status-badge ${stMeta.cls}">${stMeta.label}</span></td>
                         <td data-sort="${sale.due_date || ''}">${sale.due_date ? formatarDataISO(sale.due_date) : '-'}</td>
                         <td data-sort="${dias.sort}"><span class="${dias.cls}">${dias.texto}</span></td>
+                        <td data-sort="${String(itens.length).padStart(5, '0')}"><span class="qtd-badge" data-sale-id="${sale.id}">${itens.length} produto${itens.length === 1 ? '' : 's'}</span></td>
                         <td class="price-col">R$ ${total.toFixed(2)}</td>
                     </tr>
                 `;
@@ -1820,7 +1867,7 @@
             ordenarPorDataDesc('resultsVendas');
         } catch (e) {
             status.innerText = "Erro ao carregar pedidos.";
-            results.innerHTML = `<tr><td colspan="8" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
+            results.innerHTML = `<tr><td colspan="9" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
     }
 
@@ -2637,13 +2684,16 @@
                 options = `<option value="${prodId}" selected>${prodName}</option>` + options;
             }
 
+            // desconto sempre mostrado em R$ (o Odoo guarda em %)
+            const descontoEmReais = (((line.product_uom_qty ?? 1) * (line.price_unit || 0)) * (line.discount || 0) / 100).toFixed(2);
+
             html += `
-                <tr class="line-row" data-line-id="${line.id || ''}">
-                    <td><select class="line-product" ${editavel ? '' : 'disabled'} onchange="aoSelecionarProduto(this)">${options}</select></td>
+                <tr class="line-row" data-line-id="${line.id || ''}" data-orig-product="${prodId || ''}" data-orig-qty="${line.product_uom_qty ?? 1}" data-orig-price="${line.price_unit || 0}" data-orig-disc-pct="${line.discount || 0}" data-orig-disc-shown="${descontoEmReais}">
+                    <td><select class="line-product" ${(editavel || qtdEditavel) ? '' : 'disabled'} onchange="aoSelecionarProduto(this)">${options}</select></td>
                     <td class="line-stock-cell"><span class="line-stock-badge">–</span></td>
                     <td><input type="number" class="line-qty" value="${line.product_uom_qty ?? 1}" step="any" min="0" ${(editavel || qtdEditavel) ? '' : 'readonly'} oninput="recalcularTotais()"></td>
                     <td><input type="number" class="line-price" value="${line.price_unit || 0}" step="0.01" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"></td>
-                    <td><div class="desc-wrap"><input type="number" class="line-discount" value="${line.discount || 0}" step="0.01" min="0" ${editavel ? '' : 'readonly'} oninput="recalcularTotais()"><select class="line-discount-type" ${editavel ? '' : 'disabled'} onchange="trocarTipoDesconto(this)"><option value="pct">%</option><option value="val">R$</option></select></div></td>
+                    <td><div class="desc-wrap"><input type="number" class="line-discount" value="${descontoEmReais}" step="0.01" min="0" ${(editavel || qtdEditavel) ? '' : 'readonly'} oninput="recalcularTotais()"><select class="line-discount-type" ${(editavel || qtdEditavel) ? '' : 'disabled'} onchange="trocarTipoDesconto(this)"><option value="val">R$</option><option value="pct">%</option></select></div></td>
                     <td class="line-subtotal" style="font-weight:bold;">R$ ${(line.price_subtotal || 0).toFixed(2)}</td>
                     <td>${(editavel || qtdEditavel) ? `<button class="btn-remove-line" onclick="removerLinha(this)">×</button>` : ''}</td>
                 </tr>
@@ -2677,7 +2727,7 @@
             <td class="line-stock-cell"><span class="line-stock-badge">–</span></td>
             <td><input type="number" class="line-qty" value="1" step="1" oninput="recalcularTotais()"></td>
             <td><input type="number" class="line-price" value="0.00" step="0.01" oninput="recalcularTotais()"></td>
-            <td><div class="desc-wrap"><input type="number" class="line-discount" value="0" step="0.01" min="0" oninput="recalcularTotais()"><select class="line-discount-type" onchange="trocarTipoDesconto(this)"><option value="pct">%</option><option value="val">R$</option></select></div></td>
+            <td><div class="desc-wrap"><input type="number" class="line-discount" value="0" step="0.01" min="0" oninput="recalcularTotais()"><select class="line-discount-type" onchange="trocarTipoDesconto(this)"><option value="val">R$</option><option value="pct">%</option></select></div></td>
             <td class="line-subtotal" style="font-weight:bold;">R$ 0.00</td>
             <td><button class="btn-remove-line" onclick="removerLinha(this)">×</button></td>
         `;
@@ -2713,6 +2763,13 @@
         const input = row.querySelector('.line-discount');
         const tipo = row.querySelector('.line-discount-type');
         const v = Math.max(0, parseFloat(input && input.value) || 0);
+        // linha já existente e nada mudou nela: mantém o % original do Odoo (evita arredondar ao converter de R$)
+        if (row.dataset.origDiscShown !== undefined && tipo && tipo.value === 'val'
+            && v === (parseFloat(row.dataset.origDiscShown) || 0)
+            && (parseFloat(row.querySelector('.line-qty').value) || 0) === (parseFloat(row.dataset.origQty) || 0)
+            && (parseFloat(row.querySelector('.line-price').value) || 0) === (parseFloat(row.dataset.origPrice) || 0)) {
+            return parseFloat(row.dataset.origDiscPct) || 0;
+        }
         if (tipo && tipo.value === 'val') {
             const base = (parseFloat(row.querySelector('.line-qty').value) || 0) * (parseFloat(row.querySelector('.line-price').value) || 0);
             return base > 0 ? Math.min(100, Math.round(v / base * 100 * 1000000) / 1000000) : 0;
@@ -2795,8 +2852,12 @@
         document.querySelectorAll('#saleLinesBody .line-row').forEach(row => {
             const prodVal = row.querySelector('.line-product').value;
             if (prodVal) {
+                const lineId = row.getAttribute('data-line-id') || null;
+                // Pedido confirmado: trocar o produto de uma linha = tirar a antiga (volta ao estoque) e lançar a nova (sai do estoque)
+                const trocou = !!(modoConfirmadoEditavel && lineId && row.dataset.origProduct && String(prodVal) !== String(row.dataset.origProduct));
                 linesData.push({
-                    id: row.getAttribute('data-line-id') || null,
+                    id: trocou ? null : lineId,
+                    replaces: trocou ? lineId : null,
                     product_id: prodVal,
                     qty: row.querySelector('.line-qty').value,
                     price: row.querySelector('.line-price').value,
@@ -2930,6 +2991,8 @@
             alert('A quantidade de cada produto deve ser maior que zero. Para tirar um produto, use o botão ×.');
             return;
         }
+        // linhas cujo produto foi trocado: a antiga sai do pedido e a nova entra
+        const removidasPorTroca = linhas.filter(l => l.replaces).map(l => l.replaces);
         try {
             const res = await fetch('/api/odoo', {
                 method: 'POST',
@@ -2940,7 +3003,7 @@
                     due_date: document.getElementById('saleDueDate').value,
                     order_date: orderDateParaEnvio(),
                     lines: linhas,
-                    removed_line_ids: linesToRemove
+                    removed_line_ids: [...linesToRemove, ...removidasPorTroca]
                 })
             });
             const data = await res.json();
@@ -3282,7 +3345,7 @@
 
     // Resumo das linhas (para saber se algo foi adicionado, excluído ou teve a quantidade alterada)
     function assinaturaLinhas() {
-        const linhas = coletarLinhasDoFormulario().map(l => [l.id, l.product_id, Number(l.qty), Number(l.price), Number(l.discount)]);
+        const linhas = coletarLinhasDoFormulario().map(l => [l.id, l.replaces, l.product_id, Number(l.qty), Number(l.price), Number(l.discount)]);
         return JSON.stringify(linhas) + '|' + linesToRemove.join(',');
     }
 
