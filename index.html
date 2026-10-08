@@ -319,6 +319,7 @@
                 <option value="all">Todos os locais</option>
             </select>
             <button onclick="buscarEstoque()">Pesquisar</button>
+            <button onclick="abrirModalAjusteEstoque()" style="background-color: var(--edit-color);">Ajustar Estoque</button>
         </div>
 
         <div id="statusEstoque" class="status">Escolha um local ou digite o nome do produto para ver o estoque.</div>
@@ -555,6 +556,29 @@
         <div class="modal-actions">
             <button class="btn-cancel" onclick="fecharModalEditProduto()">Cancelar</button>
             <button class="btn-save" id="btnSalvarProduto" onclick="salvarEdicaoProduto()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Ajuste de Estoque -->
+<div class="modal-overlay" id="ajusteEstoqueModal" style="z-index: 1150;">
+    <div class="modal" style="max-width: 560px;">
+        <h2>Ajustar Estoque</h2>
+
+        <label>Local do estoque</label>
+        <select id="ajusteLocal" onchange="atualizarQuantidadesAtuaisAjuste()"></select>
+
+        <label>Buscar produto</label>
+        <div class="partner-search-container">
+            <input type="text" id="ajusteBusca" placeholder="Digite o nome do produto..." autocomplete="off" oninput="buscarProdutosAjuste()">
+            <div class="partner-dropdown" id="ajusteDropdown"></div>
+        </div>
+
+        <div id="ajusteItens" style="display: flex; flex-direction: column; gap: 8px;"></div>
+
+        <div class="modal-actions">
+            <button class="btn-cancel" onclick="fecharModalAjusteEstoque()">Cancelar</button>
+            <button class="btn-save" id="btnSalvarAjuste" onclick="salvarAjusteEstoque()">Salvar Ajuste</button>
         </div>
     </div>
 </div>
@@ -1422,6 +1446,140 @@
         document.getElementById('locationFilter').value = '';
         carregarLocaisEstoque();
         buscarEstoque(); // sem filtro, só mostra a orientação
+    }
+
+    /* AJUSTE DE ESTOQUE */
+    let ajusteItens = [];      // { id, name, atual, nova }
+    let ajusteBuscaTimer = null;
+    let ajusteBuscaReq = 0;
+
+    function escAjuste(t) {
+        return String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    async function abrirModalAjusteEstoque() {
+        ajusteItens = [];
+        document.getElementById('ajusteBusca').value = '';
+        document.getElementById('ajusteDropdown').style.display = 'none';
+        renderItensAjuste();
+        document.getElementById('ajusteEstoqueModal').style.display = 'flex';
+
+        const select = document.getElementById('ajusteLocal');
+        select.innerHTML = '<option value="">Carregando locais...</option>';
+        try {
+            const resp = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'get_locations' }) });
+            const data = await resp.json();
+            const locais = data.result || [];
+            const filtro = document.getElementById('locationFilter').value;
+            select.innerHTML = '<option value="">Selecione o local...</option>' +
+                locais.map(l => `<option value="${l.id}">${escAjuste(l.complete_name)}</option>`).join('');
+            if (filtro && filtro !== 'all' && locais.some(l => String(l.id) === filtro)) select.value = filtro;
+        } catch (e) {
+            select.innerHTML = '<option value="">Erro ao carregar locais</option>';
+        }
+    }
+
+    function fecharModalAjusteEstoque() {
+        document.getElementById('ajusteEstoqueModal').style.display = 'none';
+    }
+
+    function buscarProdutosAjuste() {
+        clearTimeout(ajusteBuscaTimer);
+        const dd = document.getElementById('ajusteDropdown');
+        const q = document.getElementById('ajusteBusca').value.trim();
+        if (!q) { dd.style.display = 'none'; return; }
+        ajusteBuscaTimer = setTimeout(async () => {
+            const reqId = ++ajusteBuscaReq;
+            try {
+                const resp = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'search_stock_products', query: q }) });
+                const data = await resp.json();
+                if (reqId !== ajusteBuscaReq) return;
+                const lista = data.result || [];
+                dd.innerHTML = lista.length === 0
+                    ? '<div class="partner-dropdown-item" style="color:#888; cursor:default;">Nenhum produto encontrado</div>'
+                    : lista.map(p => `<div class="partner-dropdown-item" onclick="adicionarItemAjuste(${p.id}, '${escAjuste(p.display_name).replace(/'/g, '&#39;')}')">${escAjuste(p.display_name)}</div>`).join('');
+                dd.style.display = 'block';
+            } catch (e) { /* mantém a lista anterior */ }
+        }, 250);
+    }
+
+    async function adicionarItemAjuste(id, nome) {
+        document.getElementById('ajusteDropdown').style.display = 'none';
+        document.getElementById('ajusteBusca').value = '';
+        if (ajusteItens.some(i => i.id === id)) return;
+        ajusteItens.push({ id, name: nome, atual: null, nova: '' });
+        renderItensAjuste();
+        await atualizarQuantidadesAtuaisAjuste();
+    }
+
+    function removerItemAjuste(id) {
+        ajusteItens = ajusteItens.filter(i => i.id !== id);
+        renderItensAjuste();
+    }
+
+    function renderItensAjuste() {
+        const box = document.getElementById('ajusteItens');
+        if (ajusteItens.length === 0) {
+            box.innerHTML = '<div style="color:#888; font-size:13px;">Pesquise e selecione os produtos que quer ajustar.</div>';
+            return;
+        }
+        box.innerHTML = ajusteItens.map(i => `
+            <div style="display:flex; align-items:center; gap:8px; border:1px solid var(--border-color); border-radius:8px; padding:8px;">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-weight:600; font-size:13px;">${escAjuste(i.name)}</div>
+                    <div style="font-size:12px; color:#777;">Atual: ${i.atual === null ? '...' : i.atual} un</div>
+                </div>
+                <input type="number" min="0" step="any" placeholder="Nova qtd." value="${escAjuste(i.nova)}" style="width:110px;" oninput="ajusteItens.find(x => x.id === ${i.id}).nova = this.value">
+                <button class="btn-remove-line" onclick="removerItemAjuste(${i.id})">×</button>
+            </div>`).join('');
+    }
+
+    async function atualizarQuantidadesAtuaisAjuste() {
+        const loc = document.getElementById('ajusteLocal').value;
+        if (!loc || ajusteItens.length === 0) {
+            ajusteItens.forEach(i => { i.atual = null; });
+            renderItensAjuste();
+            return;
+        }
+        try {
+            const resp = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'get_stock_quantities', location_id: loc, product_ids: ajusteItens.map(i => i.id) }) });
+            const data = await resp.json();
+            const mapa = data.result || {};
+            ajusteItens.forEach(i => { i.atual = mapa[i.id] ?? 0; });
+        } catch (e) { /* mostra "..." */ }
+        renderItensAjuste();
+    }
+
+    async function salvarAjusteEstoque() {
+        const loc = document.getElementById('ajusteLocal').value;
+        if (!loc) { alert('Escolha o local do estoque.'); return; }
+        if (ajusteItens.length === 0) { alert('Selecione pelo menos um produto.'); return; }
+        if (ajusteItens.some(i => i.nova === '' || isNaN(Number(i.nova)))) { alert('Informe a nova quantidade de todos os produtos.'); return; }
+        if (ajusteItens.some(i => Number(i.nova) < 0)) { alert('A nova quantidade não pode ser negativa.'); return; }
+
+        const btn = document.getElementById('btnSalvarAjuste');
+        btn.disabled = true;
+        btn.innerText = 'Salvando...';
+        try {
+            const resp = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'adjust_stock', location_id: loc, items: ajusteItens.map(i => ({ product_id: i.id, quantity: Number(i.nova) })) })
+            });
+            const data = await resp.json();
+            if (data.error) { alert(data.error); return; }
+            const alterados = (data.results || []).filter(r => r.alterado).length;
+            let msg = alterados > 0 ? `Estoque ajustado (${alterados} produto(s)).` : 'Nenhuma quantidade mudou.';
+            if (data.errors && data.errors.length > 0) msg += '\n\nAtenção:\n- ' + data.errors.join('\n- ');
+            alert(msg);
+            fecharModalAjusteEstoque();
+            buscarEstoque();
+        } catch (e) {
+            alert('Erro de conexão ao ajustar o estoque.');
+        } finally {
+            btn.disabled = false;
+            btn.innerText = 'Salvar Ajuste';
+        }
     }
 
     let estoqueReqId = 0;
