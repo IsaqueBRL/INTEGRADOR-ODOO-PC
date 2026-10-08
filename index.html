@@ -218,6 +218,17 @@
         .sale-totals b.desc { color: var(--danger-color); }
         .sale-totals .liquido { font-size: 18px; border-top: 1px solid var(--border-color); padding-top: 4px; margin-top: 2px; }
         .sale-totals .liquido span { color: #222; font-weight: bold; }
+        .fin-top { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+        .fin-cards { flex: 1 1 520px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 18px; max-width: 900px; }
+        .fin-card { background: #fff; border: 1px solid var(--border-color); border-left: 6px solid var(--primary-color); border-radius: 12px; padding: 18px 20px; box-shadow: 0 2px 8px rgba(0,0,0,.05); display: flex; flex-direction: column; gap: 6px; }
+        .fin-card.receber { border-left-color: var(--success-color); }
+        .fin-card.pagar { border-left-color: var(--danger-color); }
+        .fin-card-title { font-size: 13px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px; color: #666; }
+        .fin-card-value { font-size: 30px; font-weight: 800; }
+        .fin-card.receber .fin-card-value { color: var(--success-color); }
+        .fin-card.pagar .fin-card-value { color: var(--danger-color); }
+        .fin-card-sub { font-size: 13px; color: #777; }
+        .fin-card-sub b { color: var(--danger-color); }
         .desc-wrap { display: flex; gap: 4px; align-items: center; }
         .desc-wrap .line-discount { width: 80px; min-width: 0; }
         .desc-wrap .line-discount-type { width: 62px; padding: 8px 4px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; background: #fff; cursor: pointer; }
@@ -436,7 +447,8 @@
 
         <div id="statusFinanceiro" class="status">Carregando contas financeiras...</div>
 
-        <div class="table-container" style="max-width: 460px;">
+        <div class="fin-top">
+        <div class="table-container" style="width: 460px; flex: none;">
             <table style="min-width: 0;">
                 <thead>
                     <tr>
@@ -447,6 +459,20 @@
                 <tbody id="resultsFinanceiro"></tbody>
                 <tfoot id="footFinanceiro"></tfoot>
             </table>
+        </div>
+
+        <div class="fin-cards">
+            <div class="fin-card receber">
+                <div class="fin-card-title">Contas a Receber</div>
+                <div class="fin-card-value" id="cardReceberValor">…</div>
+                <div class="fin-card-sub" id="cardReceberSub">Faturas de clientes não pagas</div>
+            </div>
+            <div class="fin-card pagar">
+                <div class="fin-card-title">Contas a Pagar</div>
+                <div class="fin-card-value" id="cardPagarValor">…</div>
+                <div class="fin-card-sub" id="cardPagarSub">Contas de fornecedores não pagas</div>
+            </div>
+        </div>
         </div>
 
         <h3 style="margin: 28px 0 10px; color: var(--primary-color);">Extrato de Movimentações</h3>
@@ -1747,9 +1773,33 @@
         }
     }
 
+    // Cards "Contas a Receber" / "Contas a Pagar" (soma do valor devido das faturas não canceladas e não pagas)
+    async function carregarResumoContas() {
+        const fmt = v => 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const montar = (prefixo, d, vazio) => {
+            document.getElementById(`card${prefixo}Valor`).innerText = fmt(d.total);
+            const venc = d.vencido > 0 ? ` • <b>${fmt(d.vencido)} vencido</b>` : '';
+            document.getElementById(`card${prefixo}Sub`).innerHTML = d.qtd > 0
+                ? `${d.qtd} ${d.qtd === 1 ? 'documento em aberto' : 'documentos em aberto'}${venc}`
+                : vazio;
+        };
+        try {
+            const res = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'get_receivable_payable', today: hojeISO() }) });
+            const data = await res.json();
+            if (!data.receber || !data.pagar) throw new Error(data.error || 'resposta inválida');
+            montar('Receber', data.receber, 'Nenhuma fatura em aberto');
+            montar('Pagar', data.pagar, 'Nenhuma conta em aberto');
+        } catch (e) {
+            document.getElementById('cardReceberValor').innerText = '—';
+            document.getElementById('cardPagarValor').innerText = '—';
+            document.getElementById('cardReceberSub').innerText = 'Não foi possível carregar';
+            document.getElementById('cardPagarSub').innerText = 'Não foi possível carregar';
+        }
+    }
+
     async function buscarFinanceiro() {
         const query = document.getElementById("searchFinanceiroInput").value.trim();
-        if (!query) carregarExtratoFinanceiro();
+        if (!query) { carregarExtratoFinanceiro(); carregarResumoContas(); }
         const status = document.getElementById("statusFinanceiro");
         const results = document.getElementById("resultsFinanceiro");
         const foot = document.getElementById("footFinanceiro");
