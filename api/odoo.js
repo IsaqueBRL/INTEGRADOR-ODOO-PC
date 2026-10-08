@@ -1564,15 +1564,20 @@ export default async function handler(req, res) {
             if (body.warehouse_id) {
                 domain.push(['warehouse_id', '=', parseInt(body.warehouse_id, 10)]);
             }
-            const statusGroups = { draft: ['draft', 'sent'], sale: ['sale', 'done'], cancel: ['cancel'] };
+            // Orçamento = draft+sent, Confirmado = sale+done ainda NÃO pago, Pago = sale+done com fatura(s) paga(s), Cancelado = cancel
+            const statusGroups = { draft: ['draft', 'sent'], sale: ['sale', 'done'], paid: ['sale', 'done'], cancel: ['cancel'] };
             if (body.order_status && statusGroups[body.order_status]) {
                 domain.push(['state', 'in', statusGroups[body.order_status]]);
             }
+            if (body.order_status === 'paid') {
+                domain.push(['invoice_ids.payment_state', 'in', ['paid', 'in_payment']]);
+            }
+            const filtraPorPagamento = body.order_status === 'paid' || body.order_status === 'sale';
 
             const orders = await execute("sale.order", "search_read", [domain], {
                 fields: ["id", "name", "partner_id", "amount_total", "state", "invoice_status", "invoice_ids", "warehouse_id", "date_order"],
                 order: "id desc",
-                limit: 100
+                limit: filtraPorPagamento ? 300 : 100
             });
 
             // Busca em lote o status de pagamento das faturas ligadas a cada pedido
@@ -1582,7 +1587,7 @@ export default async function handler(req, res) {
             let invoiceMap = {};
             if (allInvoiceIds.length > 0) {
                 const invoices = await execute("account.move", "search_read", [[["id", "in", allInvoiceIds]]], {
-                    fields: ["id", "payment_state", "state"]
+                    fields: ["id", "payment_state", "state", "invoice_date_due"]
                 }).catch(() => []);
                 (invoices || []).forEach(inv => { invoiceMap[inv.id] = inv; });
             }
@@ -1594,8 +1599,19 @@ export default async function handler(req, res) {
                     const allPaid = invs.every(i => i.payment_state === 'paid' || i.payment_state === 'in_payment');
                     paymentSummary = allPaid ? "pago" : "nao_pago";
                 }
-                return { ...o, payment_summary: paymentSummary };
-            });
+                // Vencimento = data de vencimento da fatura (ignora canceladas): a mais próxima entre as não pagas;
+                // se todas estiverem pagas, a mais recente
+                const ativas = invs.filter(i => i.state !== 'cancel' && i.invoice_date_due);
+                const abertas = ativas.filter(i => !(i.payment_state === 'paid' || i.payment_state === 'in_payment'));
+                let dueDate = null;
+                if (abertas.length > 0) dueDate = abertas.map(i => i.invoice_date_due).sort()[0];
+                else if (ativas.length > 0) dueDate = ativas.map(i => i.invoice_date_due).sort().pop();
+                return { ...o, payment_summary: paymentSummary, due_date: dueDate };
+            }).filter(o => {
+                if (body.order_status === 'paid') return o.payment_summary === 'pago';
+                if (body.order_status === 'sale') return o.payment_summary !== 'pago';
+                return true;
+            }).slice(0, 100);
 
             return res.status(200).json({ result });
         }
