@@ -79,7 +79,7 @@ const lookups = {
     warehouses: () => cached("warehouses", TTL_LONG, () => execute("stock.warehouse", "search_read", [[]], { fields: ["id", "name", "code"] })),
     saleProducts: () => cached("sale_products", TTL_PRODUCTS, () => execute("product.product", "search_read", [[["sale_ok", "=", true]]], { fields: ["id", "display_name", "list_price"] })),
     locations: () => cached("locations", TTL_LONG, () => execute("stock.location", "search_read", [[["usage", "=", "internal"]]], { fields: ["id", "complete_name"], limit: 200 })),
-    transferProducts: () => cached("transfer_products", TTL_PRODUCTS, () => execute("product.product", "search_read", [[["type", "!=", "service"]]], { fields: ["id", "display_name", "uom_id"], limit: 200 })),
+    transferProducts: () => cached("transfer_products", TTL_PRODUCTS, () => execute("product.product", "search_read", [[["sale_ok", "=", true], ["type", "in", ["consu", "product"]]]], { fields: ["id", "display_name", "uom_id"], limit: 200 })),
     journals: () => cached("journals", TTL_LONG, () => execute("account.journal", "search_read", [[["type", "in", ["bank", "cash"]]]], { fields: ["id", "name", "type", "default_account_id"] })),
     internalPickingTypes: () => cached("picking_types_internal", TTL_LONG, () => execute("stock.picking.type", "search_read", [[["code", "=", "internal"]]], { fields: ["id", "name", "default_location_src_id", "default_location_dest_id"] }))
 };
@@ -1655,7 +1655,7 @@ export default async function handler(req, res) {
             if (ids.length === 0) return res.status(200).json({ products: [] });
 
             // sem ordenar por display_name aqui (campo calculado, o Odoo rejeita); a ordem é feita no servidor
-            const products = await execute("product.product", "search_read", [[["id", "in", ids], ["type", "!=", "service"]]], {
+            const products = await execute("product.product", "search_read", [[["id", "in", ids], ["sale_ok", "=", true], ["type", "in", ["consu", "product"]]]], {
                 fields: ["id", "display_name", "uom_id"]
             });
             const list = (products || [])
