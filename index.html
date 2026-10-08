@@ -69,6 +69,15 @@
         .status-draft { background-color: #fff3e0; color: var(--warning-color); }
         .status-cancel { background-color: #ffebee; color: var(--danger-color); }
         .status-info { background-color: #e3f2fd; color: var(--edit-color); }
+        /* Status da lista de Vendas: cinza = Orçamento, amarelo = Confirmado, vermelho = Cancelado, verde = Pago */
+        .vs-orcamento { background-color: #eceff1; color: #546e7a; }
+        .vs-confirmado { background-color: #fff8e1; color: #b28704; }
+        .vs-cancelado { background-color: #ffebee; color: #c62828; }
+        .vs-pago { background-color: #e8f5e9; color: #2e7d32; }
+        /* SOBRE DIAS: azul = longe, amarelo = perto, vermelho = vencida */
+        .dias-longe { color: #1976d2; font-weight: 700; }
+        .dias-perto { color: #d39e00; font-weight: 700; }
+        .dias-vencida { color: #c62828; font-weight: 700; }
 
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 1000; padding: 15px; }
         .modal { background: white; padding: 20px; border-radius: 12px; width: 100%; max-width: 500px; display: flex; flex-direction: column; gap: 12px; max-height: 90vh; overflow-y: auto; position: relative; }
@@ -406,6 +415,7 @@
                 <option value="all">Todos os status</option>
                 <option value="draft">Orçamento</option>
                 <option value="sale">Confirmado</option>
+                <option value="paid">Pago</option>
                 <option value="cancel">Cancelado</option>
             </select>
             <button onclick="buscarVendas()">Pesquisar</button>
@@ -417,13 +427,14 @@
             <table>
                 <thead>
                     <tr>
+                        <th>LOCAL</th>
                         <th>DATA DO PEDIDO</th>
                         <th>NÚMERO DO PEDIDO</th>
                         <th>CLIENTE</th>
-                        <th>LOCAL/ARMAZÉM</th>
                         <th>STATUS</th>
+                        <th>VENCIMENTO</th>
+                        <th>SOBRE DIAS</th>
                         <th>VALOR TOTAL</th>
-                        <th style="text-align: center;">FATURAMENTO</th>
                     </tr>
                 </thead>
                 <tbody id="resultsVendas"></tbody>
@@ -1677,6 +1688,34 @@
         }
     }
 
+    // Status da LISTA de Vendas: Orçamento (cinza), Confirmado (amarelo), Pago (verde), Cancelado (vermelho)
+    function statusVendaLista(sale) {
+        if (sale.state === 'cancel') return { label: 'Cancelado', cls: 'vs-cancelado' };
+        if (sale.state === 'draft' || sale.state === 'sent') return { label: 'Orçamento', cls: 'vs-orcamento' };
+        if (sale.payment_summary === 'pago') return { label: 'Pago', cls: 'vs-pago' };
+        return { label: 'Confirmado', cls: 'vs-confirmado' };
+    }
+
+    function formatarDataISO(iso) {
+        const p = String(iso).split('-');
+        return p.length === 3 ? `${p[2]}/${p[1]}/${p[0]}` : '-';
+    }
+
+    // Quantos dias faltam para a fatura vencer (azul = longe, amarelo = perto até 3 dias, vermelho = vencida)
+    function diasParaVencer(sale) {
+        const vazio = { texto: '-', cls: '', sort: '' };
+        if (!sale.due_date || sale.state === 'cancel' || sale.payment_summary === 'pago') return vazio;
+        const p = String(sale.due_date).split('-').map(Number);
+        if (p.length !== 3 || p.some(isNaN)) return vazio;
+        const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+        const venc = new Date(p[0], p[1] - 1, p[2]);
+        const d = Math.round((venc - hoje) / 86400000);
+        const sort = String(d + 100000).padStart(7, '0');
+        if (d < 0) return { texto: `Vencida há ${-d} dia${d === -1 ? '' : 's'}`, cls: 'dias-vencida', sort };
+        if (d === 0) return { texto: 'Vence hoje', cls: 'dias-perto', sort };
+        return { texto: `${d} dia${d === 1 ? '' : 's'}`, cls: d <= 3 ? 'dias-perto' : 'dias-longe', sort };
+    }
+
     function getPaymentSummaryMeta(summary) {
         switch (summary) {
             case 'pago': return { label: 'Pago', cls: 'status-sale' };
@@ -1748,7 +1787,7 @@
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhum pedido encontrado.";
-                results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #888;">Nenhum pedido encontrado</td></tr>`;
+                results.innerHTML = `<tr><td colspan="8" style="text-align: center; color: #888;">Nenhum pedido encontrado</td></tr>`;
                 return;
             }
 
@@ -1761,25 +1800,19 @@
                 const orderNum = sale.name || "-";
                 const total = sale.amount_total ?? 0;
                 const statusMeta = getOrderStatusMeta(sale.state);
-                const paymentMeta = sale.state === 'cancel' ? { label: 'Cancelado', cls: 'status-cancel' } : getPaymentSummaryMeta(sale.payment_summary);
+                const stMeta = statusVendaLista(sale);
+                const dias = diasParaVencer(sale);
 
                 html += `
                     <tr style="cursor: pointer;" onclick="abrirDetalhesVenda(${sale.id})">
+                        <td>${warehouseName}</td>
                         <td data-sort="${dataParaOrdenar(sale.date_order)}">${formatarSoData(sale.date_order)}</td>
                         <td><strong style="color: var(--primary-color); text-decoration: underline;">${orderNum}</strong></td>
                         <td>${clientName}</td>
-                        <td>${warehouseName}</td>
-                        <td>
-                            <span class="status-badge ${statusMeta.cls}">
-                                ${statusMeta.label}
-                            </span>
-                        </td>
+                        <td><span class="status-badge ${stMeta.cls}">${stMeta.label}</span></td>
+                        <td data-sort="${sale.due_date || ''}">${sale.due_date ? formatarDataISO(sale.due_date) : '-'}</td>
+                        <td data-sort="${dias.sort}"><span class="${dias.cls}">${dias.texto}</span></td>
                         <td class="price-col">R$ ${total.toFixed(2)}</td>
-                        <td style="text-align: center;">
-                            <span class="status-badge ${paymentMeta.cls}">
-                                ${paymentMeta.label}
-                            </span>
-                        </td>
                     </tr>
                 `;
             });
@@ -1787,7 +1820,7 @@
             ordenarPorDataDesc('resultsVendas');
         } catch (e) {
             status.innerText = "Erro ao carregar pedidos.";
-            results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
+            results.innerHTML = `<tr><td colspan="8" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
     }
 
@@ -3217,10 +3250,13 @@
         const table = tbody.closest('table');
         const ths = table.querySelectorAll('thead th');
         ths.forEach(th => th.classList.remove('sort-asc', 'sort-desc'));
-        if (ths[0]) ths[0].classList.add('sort-desc');
-        const rows = Array.from(tbody.querySelectorAll('tr')).filter(r => r.children[0] && r.children[0].dataset.sort !== undefined);
+        // a coluna de data é a primeira que tem data-sort (na Vendas, a 1ª coluna é o Local)
+        const primeira = Array.from(tbody.querySelectorAll('tr')).find(r => r.querySelector('td[data-sort]'));
+        const col = primeira ? Array.from(primeira.children).findIndex(c => c.dataset.sort !== undefined) : 0;
+        if (ths[col]) ths[col].classList.add('sort-desc');
+        const rows = Array.from(tbody.querySelectorAll('tr')).filter(r => r.children[col] && r.children[col].dataset.sort !== undefined);
         rows.sort((ra, rb) => {
-            const a = ra.children[0].dataset.sort || '', b = rb.children[0].dataset.sort || '';
+            const a = ra.children[col].dataset.sort || '', b = rb.children[col].dataset.sort || '';
             return a < b ? 1 : (a > b ? -1 : 0);
         });
         rows.forEach(r => tbody.appendChild(r));
