@@ -1521,19 +1521,39 @@ export default async function handler(req, res) {
                 return res.status(400).json({ error: "O cliente só tem R$ " + saldoAntes.toFixed(2).replace(".", ",") + " de crédito." });
             }
 
+            // Observação: "Crédito adicionado para NOME" / "Crédito retirado de NOME"
+            const observacao = operation === "add" ? "Crédito adicionado para " + nome : "Crédito retirado de " + nome;
             const dados = await onlyExistingFields("account.payment", {
                 payment_type: operation === "add" ? "inbound" : "outbound",
                 partner_type: "customer",
                 partner_id: pid,
                 amount: valor,
                 journal_id: Number(journal_id),
-                ref: operation === "add" ? "Crédito do cliente (adiantamento)" : "Retirada de crédito do cliente",
+                memo: observacao,
+                ref: observacao,
                 date: date || undefined
             });
             let paymentId = null;
             try {
                 paymentId = await execute("account.payment", "create", [dados]);
                 await execute("account.payment", "action_post", [[paymentId]]);
+
+                // Escreve a observação no campo "Referência" do lançamento no diário e no campo "Anotação" do pagamento
+                // (os nomes técnicos mudam entre versões do Odoo, então procura pelo rótulo e tenta cada campo com segurança)
+                try {
+                    const pgInfo = await execute("account.payment", "read", [[paymentId]], { fields: ["move_id"] });
+                    const mvId = pgInfo && pgInfo[0] && Array.isArray(pgInfo[0].move_id) ? pgInfo[0].move_id[0] : null;
+                    if (mvId) { try { await execute("account.move", "write", [[mvId], { ref: observacao }]); } catch (e) { /* melhor esforço */ } }
+                    const defs = await cached("fields_text_account.payment", TTL_LONG, () => execute("account.payment", "fields_get", [], { attributes: ["string", "type", "readonly"] }));
+                    const candidatos = Object.keys(defs || {}).filter(k => {
+                        const d = defs[k];
+                        if (!d || !["char", "text"].includes(d.type)) return false;
+                        return k === "memo" || k === "ref" || /^(anota[cç][aã]o|memo)$/i.test(String(d.string || "").trim());
+                    });
+                    for (const campo of candidatos) {
+                        try { await execute("account.payment", "write", [[paymentId], { [campo]: observacao }]); } catch (e) { /* campo calculado/somente leitura */ }
+                    }
+                } catch (e) { /* a observação é complementar: não impede o lançamento */ }
 
                 if (operation === "remove") {
                     // a saída (débito do cliente) é abatida contra os créditos em aberto
