@@ -94,6 +94,18 @@ async function getCashBankAccounts() {
     return accounts || [];
 }
 
+// Contas "Banco e caixa" que estão ATIVAS (campo "Ativo" do plano de contas), em ordem alfabética
+async function getActiveCashBankAccounts() {
+    const domain = [["account_type", "in", ["asset_cash", "bank_and_cash"]]];
+    try {
+        const defs = await cached("fields_account.account_active", TTL_LONG, () => execute("account.account", "fields_get", [], { attributes: ["type"] }));
+        if (defs && defs.active) domain.push(["active", "=", true]);
+        else if (defs && defs.deprecated) domain.push(["deprecated", "=", false]);
+    } catch (e) { /* sem o campo: o filtro padrão do Odoo já esconde as arquivadas */ }
+    const accounts = await execute("account.account", "search_read", [domain], { fields: ["id", "code", "name"], order: "name asc", limit: 200 });
+    return accounts || [];
+}
+
 // Contas para pagamento de fatura: SOMENTE contas do tipo "Banco e caixa" (plano de contas).
 // O Odoo registra o pagamento por diário, então cada conta é ligada ao diário que a usa como conta padrão.
 async function getPaymentAccounts() {
@@ -1910,6 +1922,67 @@ export default async function handler(req, res) {
 
             const moves = await execute("account.move", "read", [[moveId]], { fields: ["name"] }).catch(() => []);
             return res.status(200).json({ success: true, id: moveId, name: (moves && moves[0] && moves[0].name) || "" });
+        }
+
+        // AÇÃO: CONTAS PARA AJUSTE DE SALDO (somente "Banco e caixa" e ativas)
+        if (action === "get_balance_adjust_setup") {
+            const accounts = await getActiveCashBankAccounts();
+            return res.status(200).json({ accounts: accounts.map(a => ({ id: a.id, code: a.code || "", name: a.name || "" })) });
+        }
+
+        // AÇÃO: AJUSTAR SALDO DE UMA CONTA (lançamento de diário no diário "Operações diversas")
+        if (action === "create_balance_adjustment") {
+            const accountId = Number(body.account_id) || 0;
+            const operation = body.operation;
+            const amount = Math.round(Number(body.amount) * 100) / 100;
+            if (!accountId) return res.status(400).json({ error: "Selecione a conta." });
+            if (operation !== "in" && operation !== "out") return res.status(400).json({ error: "Escolha Entrada ou Saída." });
+            if (!(amount > 0)) return res.status(400).json({ error: "Informe um valor maior que zero." });
+
+            const conta = (await getActiveCashBankAccounts()).find(a => a.id === accountId);
+            if (!conta) return res.status(400).json({ error: "Conta inválida: só contas do tipo Banco e caixa que estejam ativas." });
+
+            // diário "Operações diversas" (MISC)
+            const diarios = await execute("account.journal", "search_read", [[["type", "=", "general"]]], { fields: ["id", "name", "code"], limit: 20 });
+            const diario = (diarios || []).find(j => j.code === "MISC") || (diarios || []).find(j => /opera[cç][oõ]es diversas/i.test(j.name || "")) || (diarios || [])[0];
+            if (!diario) return res.status(400).json({ error: 'Diário "Operações diversas" não encontrado no Odoo.' });
+
+            // contrapartida: "Numerários em Trânsito" (a mesma usada nos ajustes feitos à mão no Odoo)
+            let contra = await execute("account.account", "search_read", [[["name", "=", "Numerários em Trânsito"]]], { fields: ["id", "code", "name"], limit: 1 });
+            if (!contra || contra.length === 0) {
+                const alt = await execute("account.account", "search_read", [[["name", "ilike", "Numerários em Trânsito"]]], { fields: ["id", "code", "name"], limit: 10 });
+                contra = (alt || []).filter(a => !/pos/i.test(a.name));
+            }
+            if (!contra || contra.length === 0) return res.status(400).json({ error: 'Conta "Numerários em Trânsito" não encontrada no plano de contas.' });
+
+            // data do painel (fuso do usuário); se fugir de ±1 dia do servidor, usa a do servidor
+            const serverToday = new Date().toISOString().slice(0, 10);
+            let entryDate = serverToday;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(body.date || "")) {
+                const diffDays = Math.abs(new Date(body.date + "T00:00:00Z") - new Date(serverToday + "T00:00:00Z")) / 86400000;
+                if (diffDays <= 1) entryDate = body.date;
+            }
+
+            const referencia = "AJUSTE DE SALDO - " + String(conta.name || "").toUpperCase();
+            const entrada = operation === "in";
+            const moveId = await execute("account.move", "create", [{
+                move_type: "entry",
+                journal_id: diario.id,
+                date: entryDate,
+                ref: referencia,
+                line_ids: [
+                    [0, 0, { account_id: accountId, name: referencia, debit: entrada ? amount : 0, credit: entrada ? 0 : amount }],
+                    [0, 0, { account_id: contra[0].id, name: referencia, debit: entrada ? 0 : amount, credit: entrada ? amount : 0 }]
+                ]
+            }]);
+            try {
+                await execute("account.move", "action_post", [[moveId]]);
+            } catch (e) {
+                await execute("account.move", "unlink", [[moveId]]).catch(() => {});
+                throw e;
+            }
+            const mv = await execute("account.move", "read", [[moveId]], { fields: ["name"] }).catch(() => []);
+            return res.status(200).json({ success: true, id: moveId, name: (mv && mv[0] && mv[0].name) || "", reference: referencia });
         }
 
         // AÇÃO: BUSCAR TRANSFERÊNCIAS INTERNAS
