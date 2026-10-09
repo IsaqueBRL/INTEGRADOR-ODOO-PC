@@ -104,6 +104,21 @@
         #creditoModal .cr-item:hover, #creditoModal .cr-item.ativo { background: #e8f1fb; color: #1259a6; }
         #creditoModal .cr-item mark { background: none; color: #1976d2; font-weight: 800; padding: 0; }
         #creditoModal .cr-vazio { padding: 12px; font-size: 13px; color: #6b7480; line-height: 1.4; }
+        .search-box button.btn-ajuste { background-color: #1976d2; }
+        .search-box button.btn-ajuste:hover { background-color: #1259a6; }
+        #ajusteSaldoModal .modal { max-width: 440px; padding: 26px 28px; gap: 6px; border-radius: 14px; }
+        #ajusteSaldoModal .aj-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+        #ajusteSaldoModal .aj-head h2 { font-size: 24px; color: #2f3b4a; margin: 0; }
+        #ajusteSaldoModal .aj-x { background: none; border: none; font-size: 26px; line-height: 1; color: #666; cursor: pointer; padding: 0 4px; }
+        #ajusteSaldoModal label.aj-l { font-size: 12.5px; font-weight: 800; letter-spacing: .4px; color: #4a5563; text-transform: uppercase; margin: 12px 0 0 0; }
+        #ajusteSaldoModal input, #ajusteSaldoModal select { padding: 12px; font-size: 15px; border-radius: 8px; border: 1px solid #cfd4da; }
+        #ajusteSaldoModal .aj-ops { display: flex; gap: 12px; margin-top: 6px; }
+        #ajusteSaldoModal .aj-op { flex: 1; padding: 13px; border: 2px solid #dfe3e8; background: #f4f5f7; border-radius: 8px; font-weight: 700; font-size: 15px; color: #4a5563; cursor: pointer; }
+        #ajusteSaldoModal .aj-op.on-in { border-color: #2e7d32; background: #e8f5e9; color: #2e7d32; }
+        #ajusteSaldoModal .aj-op.on-out { border-color: #c62828; background: #ffebee; color: #c62828; }
+        #ajusteSaldoModal .aj-save { margin-top: 18px; width: 100%; padding: 14px; background: #1976d2; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: 700; cursor: pointer; }
+        #ajusteSaldoModal .aj-save:hover { background: #1259a6; }
+        #ajusteSaldoModal .aj-save:disabled { opacity: .6; cursor: default; }
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 1000; padding: 15px; }
         .modal { background: white; padding: 20px; border-radius: 12px; width: 100%; max-width: 500px; display: flex; flex-direction: column; gap: 12px; max-height: 90vh; overflow-y: auto; position: relative; }
         .modal h2 { color: var(--primary-color); font-size: 18px; }
@@ -498,7 +513,8 @@
         <div class="search-box filtros">
             <input type="text" id="searchFinanceiroInput" style="flex: 0 1 260px; min-width: 160px;" placeholder="Nome da conta..." oninput="debounceSearch('financeiro')">
             <button onclick="buscarFinanceiro()">Pesquisar</button>
-            <button onclick="abrirModalTransferenciaContas()" style="margin-left: auto;">+ Transferência entre Contas</button>
+            <button class="btn-ajuste" onclick="abrirModalAjusteSaldo()" style="margin-left: auto;">± Ajustar Saldo</button>
+            <button onclick="abrirModalTransferenciaContas()">+ Transferência entre Contas</button>
         </div>
 
         <div id="statusFinanceiro" class="status">Carregando contas financeiras...</div>
@@ -560,6 +576,30 @@
                 <tbody id="resultsExtrato"></tbody>
             </table>
         </div>
+    </div>
+</div>
+
+<!-- Modal: Ajustar Saldo da Conta -->
+<div class="modal-overlay" id="ajusteSaldoModal" style="z-index: 1100;">
+    <div class="modal">
+        <div class="aj-head">
+            <h2>Ajustar Saldo</h2>
+            <button type="button" class="aj-x" onclick="fecharModalAjusteSaldo()" title="Fechar">&times;</button>
+        </div>
+
+        <label class="aj-l">Conta</label>
+        <select id="ajConta"><option value="">Selecione a conta...</option></select>
+
+        <label class="aj-l">Tipo de movimentação</label>
+        <div class="aj-ops">
+            <button type="button" class="aj-op on-in" id="ajOpIn" onclick="ajEscolherOp('in')">+ Entrada</button>
+            <button type="button" class="aj-op" id="ajOpOut" onclick="ajEscolherOp('out')">&minus; Saída</button>
+        </div>
+
+        <label class="aj-l">Valor (R$)</label>
+        <input type="number" id="ajValor" step="0.01" min="0.01" inputmode="decimal">
+
+        <button type="button" class="aj-save" id="ajSalvar" onclick="salvarAjusteSaldo()">Salvar Movimentação</button>
     </div>
 </div>
 
@@ -1948,6 +1988,69 @@
     }
 
     /* 4. BUSCAR FINANCEIRO */
+    // ===== AJUSTAR SALDO DA CONTA =====
+    let ajOp = 'in';
+
+    function ajEscolherOp(op) {
+        ajOp = op;
+        document.getElementById('ajOpIn').className = 'aj-op' + (op === 'in' ? ' on-in' : '');
+        document.getElementById('ajOpOut').className = 'aj-op' + (op === 'out' ? ' on-out' : '');
+    }
+
+    async function abrirModalAjusteSaldo() {
+        ajEscolherOp('in');
+        document.getElementById('ajValor').value = '';
+        try {
+            const res = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'get_balance_adjust_setup' }) });
+            const data = await res.json();
+            if (!data.accounts) return alert(data.error || 'Não foi possível carregar as contas.');
+            document.getElementById('ajConta').innerHTML = '<option value="">Selecione a conta...</option>'
+                + data.accounts.map(a => `<option value="${a.id}">${String(a.name).replace(/&/g, '&amp;').replace(/</g, '&lt;')}</option>`).join('');
+            document.getElementById('ajusteSaldoModal').style.display = 'flex';
+        } catch (e) {
+            alert('Erro ao conectar com a API do Odoo.');
+        }
+    }
+
+    function fecharModalAjusteSaldo() {
+        document.getElementById('ajusteSaldoModal').style.display = 'none';
+    }
+
+    async function salvarAjusteSaldo() {
+        const account_id = document.getElementById('ajConta').value;
+        const amount = parseFloat(document.getElementById('ajValor').value);
+        if (!account_id) return alert('Selecione a conta.');
+        if (!(amount > 0)) return alert('Informe um valor maior que zero.');
+
+        const btn = document.getElementById('ajSalvar');
+        btn.disabled = true;
+        btn.textContent = 'Salvando...';
+        try {
+            const h = new Date();
+            const pad = n => String(n).padStart(2, '0');
+            const date = `${h.getFullYear()}-${pad(h.getMonth() + 1)}-${pad(h.getDate())}`;
+            const res = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'create_balance_adjustment', account_id, operation: ajOp, amount, date })
+            });
+            const data = await res.json();
+            if (data.success) {
+                fecharModalAjusteSaldo();
+                alert('Ajuste de saldo lançado' + (data.name ? ' (' + data.name + ')' : '') + '!');
+                buscarFinanceiro();
+                carregarExtratoFinanceiro();
+            } else {
+                alert(data.error || 'Erro ao lançar o ajuste.');
+            }
+        } catch (e) {
+            alert('Erro ao conectar com a API do Odoo.');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Salvar Movimentação';
+        }
+    }
+
     // ===== TRANSFERÊNCIA ENTRE CONTAS =====
     let acctTrfDateIso = '';
 
