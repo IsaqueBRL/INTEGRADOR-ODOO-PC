@@ -353,6 +353,9 @@
                     <tr>
                         <th>LOCAL</th>
                         <th>PRODUTO</th>
+                        <th>CATEGORIA</th>
+                        <th>PREÇO DE CUSTO</th>
+                        <th>PREÇO DE VENDA</th>
                         <th>QUANTIDADE</th>
                     </tr>
                 </thead>
@@ -1663,7 +1666,7 @@
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhum registro de estoque encontrado.";
-                results.innerHTML = `<tr><td colspan="3" style="text-align: center; color: #888;">Nenhum registro de estoque encontrado</td></tr>`;
+                results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #888;">Nenhum registro de estoque encontrado</td></tr>`;
                 return;
             }
 
@@ -1674,11 +1677,16 @@
                 const locationName = Array.isArray(item.location_id) ? item.location_id[1] : "-";
                 const productName = Array.isArray(item.product_id) ? item.product_id[1] : "-";
                 const qty = item.quantity ?? 0;
+                const categoria = Array.isArray(item.categ_id) ? item.categ_id[1] : "-";
+                const moeda = v => (v === null || v === undefined) ? "-" : "R$ " + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
                 html += `
                     <tr>
                         <td>${locationName}</td>
                         <td><strong>${productName}</strong></td>
+                        <td>${categoria}</td>
+                        <td>${moeda(item.standard_price)}</td>
+                        <td>${moeda(item.lst_price)}</td>
                         <td><span class="stock-badge stock-in">${qty} un</span></td>
                     </tr>
                 `;
@@ -1687,7 +1695,7 @@
         } catch (e) {
             if (reqId !== estoqueReqId) return;
             status.innerText = "Erro ao carregar estoque.";
-            results.innerHTML = `<tr><td colspan="3" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
+            results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
     }
 
