@@ -1505,6 +1505,20 @@ export default async function handler(req, res) {
                 fields: ["id", "location_id", "product_id", "quantity"],
                 limit: 100
             });
+
+            // Categoria, preço de custo e preço de venda de cada produto
+            const ids = [...new Set((result || []).map(r => Array.isArray(r.product_id) ? r.product_id[0] : null).filter(Boolean))];
+            const info = {};
+            if (ids.length > 0) {
+                const prods = await execute("product.product", "read", [ids], { fields: ["categ_id", "standard_price", "lst_price"] });
+                (prods || []).forEach(p => { info[p.id] = p; });
+            }
+            (result || []).forEach(r => {
+                const p = Array.isArray(r.product_id) ? info[r.product_id[0]] : null;
+                r.categ_id = p ? p.categ_id : false;
+                r.standard_price = p ? p.standard_price : null;
+                r.lst_price = p ? p.lst_price : null;
+            });
             return res.status(200).json({ result: result || [] });
         }
 
@@ -1537,7 +1551,7 @@ export default async function handler(req, res) {
             if (itens.length === 0) return res.status(400).json({ error: "Informe a nova quantidade dos produtos." });
             if (itens.some(i => Number(i.quantity) < 0)) return res.status(400).json({ error: "A nova quantidade não pode ser negativa." });
 
-            const ctx = { inventory_mode: true };
+            const ctx = { inventory_mode: true, inventory_name: "Ajuste pelo integrador PC" };
             const resultados = [];
             const erros = [];
 
