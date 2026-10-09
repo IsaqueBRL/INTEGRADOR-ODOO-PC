@@ -79,6 +79,23 @@
         .dias-perto { color: #d39e00; font-weight: 700; }
         .dias-vencida { color: #c62828; font-weight: 700; }
 
+        .search-box button.btn-credito { background-color: #1976d2; }
+        .search-box button.btn-credito:hover { background-color: #1259a6; }
+        #creditoModal .modal { max-width: 460px; padding: 26px 28px; gap: 6px; border-radius: 14px; }
+        #creditoModal .cr-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+        #creditoModal .cr-head h2 { font-size: 24px; color: #2f3b4a; margin: 0; }
+        #creditoModal .cr-x { background: none; border: none; font-size: 26px; line-height: 1; color: #666; cursor: pointer; padding: 0 4px; }
+        #creditoModal label.cr-l { font-size: 12.5px; font-weight: 800; letter-spacing: .4px; color: #4a5563; text-transform: uppercase; margin: 12px 0 0 0; }
+        #creditoModal input, #creditoModal select { padding: 12px; font-size: 15px; border-radius: 8px; border: 1px solid #cfd4da; }
+        #creditoModal .cr-ops { display: flex; gap: 12px; margin-top: 6px; }
+        #creditoModal .cr-op { flex: 1; padding: 13px; border: 2px solid #dfe3e8; background: #f4f5f7; border-radius: 8px; font-weight: 700; font-size: 15px; color: #4a5563; cursor: pointer; }
+        #creditoModal .cr-op.on-add { border-color: #2e7d32; background: #e8f5e9; color: #2e7d32; }
+        #creditoModal .cr-op.on-rem { border-color: #c62828; background: #ffebee; color: #c62828; }
+        #creditoModal .cr-hint { font-size: 12.5px; color: #6b7480; margin: 6px 0 0 0; line-height: 1.45; }
+        #creditoModal .cr-saldo { font-size: 13px; font-weight: 700; color: #1976d2; margin-top: 4px; min-height: 16px; }
+        #creditoModal .cr-save { margin-top: 16px; width: 100%; padding: 14px; background: #34495e; color: #fff; border: none; border-radius: 8px; font-size: 16px; font-weight: 700; cursor: pointer; }
+        #creditoModal .cr-save:hover { background: #2a3b4d; }
+        #creditoModal .cr-save:disabled { opacity: .6; cursor: default; }
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; z-index: 1000; padding: 15px; }
         .modal { background: white; padding: 20px; border-radius: 12px; width: 100%; max-width: 500px; display: flex; flex-direction: column; gap: 12px; max-height: 90vh; overflow-y: auto; position: relative; }
         .modal h2 { color: var(--primary-color); font-size: 18px; }
@@ -436,6 +453,7 @@
                 <option value="cancel">Cancelado</option>
             </select>
             <button onclick="buscarVendas()">Pesquisar</button>
+            <button type="button" class="btn-credito" onclick="abrirModalCredito()">+ Adicionar Créditos</button>
         </div>
 
         <div id="statusVendas" class="status">Escolha um local, um status ou digite o pedido/cliente para ver os pedidos.</div>
@@ -609,6 +627,38 @@
             <button class="btn-cancel" onclick="fecharModalAjusteEstoque()">Cancelar</button>
             <button class="btn-save" id="btnSalvarAjuste" onclick="salvarAjusteEstoque()">Salvar Ajuste</button>
         </div>
+    </div>
+</div>
+
+<!-- Modal: Créditos do Cliente -->
+<div class="modal-overlay" id="creditoModal" style="z-index: 1250;">
+    <div class="modal">
+        <div class="cr-head">
+            <h2>Créditos do Cliente</h2>
+            <button type="button" class="cr-x" onclick="fecharModalCredito()" title="Fechar">&times;</button>
+        </div>
+
+        <label class="cr-l">Nome do cliente</label>
+        <input type="text" id="crNome" list="crClientesList" placeholder="Ex: João Silva" autocomplete="off" oninput="crBuscarCliente()">
+        <datalist id="crClientesList"></datalist>
+        <div class="cr-saldo" id="crSaldo"></div>
+
+        <label class="cr-l">Tipo de operação</label>
+        <div class="cr-ops">
+            <button type="button" class="cr-op on-add" id="crOpAdd" onclick="crEscolherOp('add')">+ Adicionar</button>
+            <button type="button" class="cr-op" id="crOpRem" onclick="crEscolherOp('remove')">&minus; Retirar</button>
+        </div>
+        <p class="cr-hint">Se o cliente ainda não estiver cadastrado, um novo cadastro será criado automaticamente.</p>
+
+        <label class="cr-l" id="crValorLbl">Valor do crédito a adicionar (R$)</label>
+        <input type="number" id="crValor" step="0.01" min="0" inputmode="decimal">
+
+        <label class="cr-l" id="crContaLbl">Conta que recebeu o valor</label>
+        <select id="crConta"><option value="">Selecione a conta...</option></select>
+
+        <p class="cr-hint" id="crInfo"></p>
+
+        <button type="button" class="cr-save" id="crSalvar" onclick="salvarCredito()">Salvar</button>
     </div>
 </div>
 
@@ -2289,6 +2339,117 @@
             document.getElementById('saleModal').style.display = 'flex';
         } catch (e) {
             alert('Erro ao carregar detalhes do pedido: ' + (e.message || 'erro desconhecido'));
+        }
+    }
+
+    /* ============ Créditos do cliente (adicionar / retirar sem pedido de venda) ============ */
+    let crOp = 'add';
+    let crParceiro = null;       // { id, name } quando o nome digitado bate com um cadastro existente
+    let crTimer = null;
+    const crMoeda = v => 'R$ ' + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    function crAtualizarTextos() {
+        const add = crOp === 'add';
+        document.getElementById('crOpAdd').className = 'cr-op' + (add ? ' on-add' : '');
+        document.getElementById('crOpRem').className = 'cr-op' + (add ? '' : ' on-rem');
+        document.getElementById('crValorLbl').textContent = add ? 'Valor do crédito a adicionar (R$)' : 'Valor do crédito a retirar (R$)';
+        document.getElementById('crContaLbl').textContent = add ? 'Conta que recebeu o valor' : 'Conta de onde sai o valor';
+        document.getElementById('crInfo').textContent = add
+            ? 'Use quando o cliente pagar antecipadamente por um produto que ainda será retirado depois (ex: pagou hoje, retira amanhã). O valor entra imediatamente na conta selecionada e fica como crédito do cliente, para ser usado em compras futuras.'
+            : 'Use para reduzir ou corrigir o crédito do cliente. O valor sai da conta selecionada e não pode passar do crédito disponível dele.';
+    }
+
+    function crEscolherOp(op) { crOp = op; crAtualizarTextos(); }
+
+    async function abrirModalCredito() {
+        crOp = 'add';
+        crParceiro = null;
+        document.getElementById('crNome').value = '';
+        document.getElementById('crValor').value = '';
+        document.getElementById('crSaldo').textContent = '';
+        document.getElementById('crClientesList').innerHTML = '';
+        crAtualizarTextos();
+        const sel = document.getElementById('crConta');
+        sel.innerHTML = '<option value="">Selecione a conta...</option>';
+        const contas = (availableJournals && availableJournals.length) ? availableJournals : await carregarDiarios();
+        contas.filter(c => c.has_journal !== false).forEach(c => {
+            const o = document.createElement('option');
+            o.value = c.id; o.textContent = c.name;
+            sel.appendChild(o);
+        });
+        document.getElementById('creditoModal').style.display = 'flex';
+        document.getElementById('crNome').focus();
+    }
+
+    function fecharModalCredito() {
+        document.getElementById('creditoModal').style.display = 'none';
+    }
+
+    // sugere clientes enquanto digita e mostra o crédito atual quando o nome bate com um cadastro
+    function crBuscarCliente() {
+        clearTimeout(crTimer);
+        crParceiro = null;
+        const nome = document.getElementById('crNome').value.trim();
+        document.getElementById('crSaldo').textContent = '';
+        if (nome.length < 2) return;
+        crTimer = setTimeout(async () => {
+            try {
+                const r = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'search_partners', query: nome }) });
+                const d = await r.json();
+                const lista = d.partners || [];
+                document.getElementById('crClientesList').innerHTML = lista.map(p => `<option value="${String(p.name).replace(/"/g, '&quot;')}"></option>`).join('');
+                if (document.getElementById('crNome').value.trim() !== nome) return;   // o usuário continuou digitando
+                const exato = lista.find(p => String(p.name).trim().toLowerCase() === nome.toLowerCase());
+                if (!exato) return;
+                crParceiro = { id: exato.id, name: exato.name };
+                const c = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'get_customer_credit', partner_id: exato.id }) });
+                const cd = await c.json();
+                if (crParceiro && crParceiro.id === exato.id) document.getElementById('crSaldo').textContent = 'Crédito atual do cliente: ' + crMoeda(cd.credit);
+            } catch (e) { /* sugestão é opcional */ }
+        }, 300);
+    }
+
+    async function salvarCredito() {
+        const nome = document.getElementById('crNome').value.trim();
+        const valor = parseFloat(document.getElementById('crValor').value);
+        const conta = document.getElementById('crConta').value;
+        if (!nome) return alert('Informe o nome do cliente.');
+        if (!(valor > 0)) return alert('Informe o valor do crédito.');
+        if (!conta) return alert('Selecione a conta.');
+
+        const btn = document.getElementById('crSalvar');
+        btn.disabled = true;
+        btn.textContent = 'Salvando...';
+        try {
+            const hoje = new Date();
+            const data = hoje.getFullYear() + '-' + String(hoje.getMonth() + 1).padStart(2, '0') + '-' + String(hoje.getDate()).padStart(2, '0');
+            const r = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    action: 'save_customer_credit',
+                    partner_id: crParceiro ? crParceiro.id : null,
+                    partner_name: nome,
+                    operation: crOp,
+                    amount: valor,
+                    journal_id: conta,
+                    date: data
+                })
+            });
+            const d = await r.json();
+            if (d.success) {
+                fecharModalCredito();
+                alert((crOp === 'add' ? 'Crédito adicionado' : 'Crédito retirado') + ' para ' + d.partner_name + '.'
+                    + (d.created_partner ? '\nO cliente foi cadastrado automaticamente.' : '')
+                    + '\nCrédito atual do cliente: ' + crMoeda(d.credit));
+            } else {
+                alert(d.error || 'Erro ao salvar o crédito.');
+            }
+        } catch (e) {
+            alert('Erro ao conectar com a API do Odoo.');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = 'Salvar';
         }
     }
 
