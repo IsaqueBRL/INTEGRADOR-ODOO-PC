@@ -1462,6 +1462,99 @@ export default async function handler(req, res) {
             }
         }
 
+        // ---- Crédito do cliente: pagamentos sem fatura ligada (adiantamentos) ----
+        const r2c = n => Math.round(Number(n) * 100) / 100;
+        const LINHA_RECEBER_C = ["account_id.account_type", "=", "asset_receivable"];
+        const linhasDeCreditoC = async (partnerId) => (await execute("account.move.line", "search_read", [[
+            ["partner_id", "child_of", Number(partnerId)], LINHA_RECEBER_C, ["parent_state", "=", "posted"], ["amount_residual", "<", 0]
+        ]], { fields: ["id", "amount_residual"], order: "date asc, id asc" })) || [];
+        const saldoCredito = async (partnerId) => {
+            const linhas = await linhasDeCreditoC(partnerId);
+            return Math.max(0, r2c(linhas.reduce((t, l) => t - Number(l.amount_residual), 0)));
+        };
+
+        // AÇÃO: SALDO DE CRÉDITO DO CLIENTE
+        if (action === "get_customer_credit") {
+            const { partner_id } = body;
+            if (!partner_id) return res.status(200).json({ credit: 0 });
+            return res.status(200).json({ credit: await saldoCredito(partner_id) });
+        }
+
+        // AÇÃO: ADICIONAR / RETIRAR CRÉDITO DO CLIENTE (sem pedido de venda)
+        if (action === "save_customer_credit") {
+            const { partner_id, partner_name, operation, amount, journal_id, date } = body;
+            const valor = r2c(amount);
+            if (operation !== "add" && operation !== "remove") return res.status(400).json({ error: "Tipo de operação inválido." });
+            if (!(valor > 0)) return res.status(400).json({ error: "Informe um valor maior que zero." });
+            if (!journal_id) return res.status(400).json({ error: "Selecione a conta." });
+
+            // Só contas do tipo "Banco e caixa"
+            const contasOk = await getPaymentAccounts();
+            if (!contasOk.some(a => a.has_journal && a.id === Number(journal_id))) {
+                return res.status(400).json({ error: "Conta inválida: só são permitidas contas do tipo Banco e caixa." });
+            }
+
+            // Cliente: usa o informado/existente; se não existir, cria o cadastro
+            let pid = Number(partner_id) || 0;
+            let nome = String(partner_name || "").trim();
+            let criado = false;
+            if (!pid) {
+                if (!nome) return res.status(400).json({ error: "Informe o nome do cliente." });
+                const achados = await execute("res.partner", "search_read", [[["name", "=ilike", nome]]], { fields: ["id", "name"], limit: 1 });
+                if (achados && achados.length > 0) { pid = achados[0].id; nome = achados[0].name; }
+                else {
+                    if (operation === "remove") return res.status(400).json({ error: "Cliente não encontrado: não há crédito para retirar." });
+                    pid = await execute("res.partner", "create", [{ name: nome, customer_rank: 1 }]);
+                    criado = true;
+                }
+            } else {
+                const pr = await execute("res.partner", "read", [[pid]], { fields: ["name"] });
+                if (!pr || !pr[0]) return res.status(404).json({ error: "Cliente não encontrado." });
+                nome = pr[0].name;
+            }
+            if (nome.trim().toUpperCase() === "CLIENTE") {
+                return res.status(400).json({ error: 'Não é possível guardar crédito no cliente genérico "CLIENTE". Informe o nome do cliente.' });
+            }
+
+            const saldoAntes = await saldoCredito(pid);
+            if (operation === "remove" && valor > saldoAntes + 0.005) {
+                return res.status(400).json({ error: "O cliente só tem R$ " + saldoAntes.toFixed(2).replace(".", ",") + " de crédito." });
+            }
+
+            const dados = await onlyExistingFields("account.payment", {
+                payment_type: operation === "add" ? "inbound" : "outbound",
+                partner_type: "customer",
+                partner_id: pid,
+                amount: valor,
+                journal_id: Number(journal_id),
+                ref: operation === "add" ? "Crédito do cliente (adiantamento)" : "Retirada de crédito do cliente",
+                date: date || undefined
+            });
+            let paymentId = null;
+            try {
+                paymentId = await execute("account.payment", "create", [dados]);
+                await execute("account.payment", "action_post", [[paymentId]]);
+
+                if (operation === "remove") {
+                    // a saída (débito do cliente) é abatida contra os créditos em aberto
+                    const pg = await execute("account.payment", "read", [[paymentId]], { fields: ["move_id"] });
+                    const moveId = pg && pg[0] && Array.isArray(pg[0].move_id) ? pg[0].move_id[0] : null;
+                    const deb = moveId ? await execute("account.move.line", "search_read", [[["move_id", "=", moveId], LINHA_RECEBER_C]], { fields: ["id"], limit: 1 }) : [];
+                    if (!deb || deb.length === 0) throw new Error("não encontrei o lançamento a receber da retirada.");
+                    const creds = await linhasDeCreditoC(pid);
+                    await execute("account.move.line", "reconcile", [[deb[0].id, ...creds.map(c => c.id)]]);
+                }
+            } catch (e) {
+                // desfaz o lançamento para não deixar nada pela metade
+                if (paymentId) {
+                    try { await execute("account.payment", "action_draft", [[paymentId]]); await execute("account.payment", "unlink", [[paymentId]]); } catch (e2) { /* melhor esforço */ }
+                }
+                return res.status(500).json({ error: "Não foi possível " + (operation === "add" ? "adicionar" : "retirar") + " o crédito: " + e.message });
+            }
+
+            return res.status(200).json({ success: true, partner_id: pid, partner_name: nome, created_partner: criado, credit: await saldoCredito(pid) });
+        }
+
         // AÇÃO: BUSCAR PARCEIROS
         if (action === "search_partners") {
             const query = body.query || "";
