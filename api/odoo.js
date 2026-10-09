@@ -1947,13 +1947,18 @@ export default async function handler(req, res) {
             const diario = (diarios || []).find(j => j.code === "MISC") || (diarios || []).find(j => /opera[cç][oõ]es diversas/i.test(j.name || "")) || (diarios || [])[0];
             if (!diario) return res.status(400).json({ error: 'Diário "Operações diversas" não encontrado no Odoo.' });
 
-            // contrapartida: "Numerários em Trânsito" (a mesma usada nos ajustes feitos à mão no Odoo)
-            let contra = await execute("account.account", "search_read", [[["name", "=", "Numerários em Trânsito"]]], { fields: ["id", "code", "name"], limit: 1 });
+            // contrapartida: conta 1.01.01.04.01 "Numerários em Trânsito" (a mesma usada nos ajustes feitos à mão no Odoo).
+            // Procura pelo CÓDIGO: o nome é traduzido e muda conforme o idioma do usuário da API.
+            const CODIGO_CONTRAPARTIDA = "1.01.01.04.01";
+            let contra = await execute("account.account", "search_read", [[["code", "=", CODIGO_CONTRAPARTIDA]]], { fields: ["id", "code", "name"], limit: 1 }).catch(() => []);
             if (!contra || contra.length === 0) {
-                const alt = await execute("account.account", "search_read", [[["name", "ilike", "Numerários em Trânsito"]]], { fields: ["id", "code", "name"], limit: 10 });
+                contra = await execute("account.account", "search_read", [[["code", "=like", CODIGO_CONTRAPARTIDA + "%"]]], { fields: ["id", "code", "name"], limit: 5, order: "code asc" }).catch(() => []);
+            }
+            if (!contra || contra.length === 0) {
+                const alt = await execute("account.account", "search_read", [[["name", "ilike", "Numer"], ["name", "ilike", "nsito"]]], { fields: ["id", "code", "name"], limit: 10, order: "code asc" }).catch(() => []);
                 contra = (alt || []).filter(a => !/pos/i.test(a.name));
             }
-            if (!contra || contra.length === 0) return res.status(400).json({ error: 'Conta "Numerários em Trânsito" não encontrada no plano de contas.' });
+            if (!contra || contra.length === 0) return res.status(400).json({ error: 'Conta de contrapartida ' + CODIGO_CONTRAPARTIDA + ' (Numerários em Trânsito) não encontrada no plano de contas.' });
 
             // data do painel (fuso do usuário); se fugir de ±1 dia do servidor, usa a do servidor
             const serverToday = new Date().toISOString().slice(0, 10);
