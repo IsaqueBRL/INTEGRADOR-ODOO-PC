@@ -1,7 +1,5 @@
 {
   "name": "integrador-odoo-pc",
-  "version": "1.0.0",
   "private": true,
-  "description": "Integrador Odoo (versão PC) - Deuris Candy 2",
   "type": "module"
 }
