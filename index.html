@@ -4,6 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Deuris Candy 2 - Sistema de Gestão</title>
+    <meta name="theme-color" content="#714B67">
+    <meta name="application-name" content="Integrador">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Integrador">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <style>
         :root {
             --primary-color: #714B67;
@@ -31,6 +40,15 @@
         .menu-buttons { display: flex; gap: 15px; width: 100%; max-width: 800px; flex-wrap: wrap; justify-content: center; }
         .btn-menu { flex: 1; min-width: 130px; padding: 18px 10px; background-color: var(--primary-color); color: white; border: none; border-radius: 10px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background 0.2s; }
         .btn-menu:hover { background-color: var(--primary-hover); }
+        #installCard { display: none; width: 100%; max-width: 440px; background: #fff; border: 1px solid var(--border-color); border-radius: 14px; padding: 14px 16px; box-shadow: 0 2px 8px rgba(0,0,0,.06); text-align: left; }
+        #installCard.show { display: block; }
+        #installCard .it { display: flex; align-items: center; gap: 12px; }
+        #installCard img { width: 46px; height: 46px; flex-shrink: 0; }
+        #installCard .tx { flex: 1; font-size: 14px; line-height: 1.35; color: #666; }
+        #installCard .tx b { display: block; font-size: 15px; color: var(--primary-color); }
+        #btnInstalar { background: var(--primary-color); color: #fff; border: none; border-radius: 8px; padding: 10px 16px; font-size: 14px; font-weight: 700; cursor: pointer; }
+        #btnInstalar:hover { background: var(--primary-hover); }
+        #installFechar { background: none; border: none; color: #888; font-size: 18px; cursor: pointer; padding: 4px 6px; }
 
         .top-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
         .btn-back { background-color: #666; color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
@@ -330,6 +348,15 @@
             <button class="btn-menu" onclick="abrirTelaVendas();">VENDAS</button>
             <button class="btn-menu" onclick="mostrarTela('financeiroSection'); buscarFinanceiro();">FINANCEIRO</button>
             <button class="btn-menu" onclick="abrirTelaTransferencias();">TRANSFERÊNCIAS</button>
+        </div>
+
+        <div id="installCard">
+            <div class="it">
+                <img src="/icon-192.png" alt="">
+                <div class="tx"><b>Instalar o app no computador</b>Abre numa janela própria, direto da área de trabalho.</div>
+                <button id="btnInstalar" type="button">Instalar</button>
+                <button id="installFechar" type="button" aria-label="Dispensar">&#10005;</button>
+            </div>
         </div>
     </div>
 
@@ -4138,6 +4165,45 @@
     function fecharTransferModal() {
         document.getElementById('transferModal').style.display = 'none';
     }
+
+    /* ============ App instalável (PWA): service worker + botão Instalar ============ */
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => {
+            navigator.serviceWorker.register('/service-worker.js').catch(e => console.warn('Service worker não registrado:', e));
+        });
+    }
+
+    (function () {
+        const card = document.getElementById('installCard'), btn = document.getElementById('btnInstalar');
+        if (!card || !btn) return;
+        const jaInstalado = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+        const dispensado = () => { try { return localStorage.getItem('installDispensado') === '1'; } catch (e) { return false; } };
+        if (jaInstalado || dispensado()) return;
+
+        let promptInstalar = null;
+
+        // Chrome / Edge: o navegador avisa quando o app pode ser instalado
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            promptInstalar = e;
+            card.classList.add('show');
+        });
+
+        btn.addEventListener('click', async () => {
+            if (!promptInstalar) return;
+            promptInstalar.prompt();
+            await promptInstalar.userChoice.catch(() => {});
+            promptInstalar = null;
+            card.classList.remove('show');
+        });
+
+        window.addEventListener('appinstalled', () => { card.classList.remove('show'); });
+
+        document.getElementById('installFechar').addEventListener('click', () => {
+            card.classList.remove('show');
+            try { localStorage.setItem('installDispensado', '1'); } catch (e) {}
+        });
+    })();
 </script>
 
 </body>
