@@ -1,64 +1,51 @@
-// Service worker do Integrador Odoo PC
-// - Nunca guarda chamadas da API (/api/...): os dados do Odoo sempre vêm da rede.
-// - Páginas: rede primeiro (o site é atualizado com frequência); sem internet, abre a última cópia guardada.
-// - Ícones e manifest: guardados para abrir mais rápido.
-const VERSAO = 'deuris-pc-v1';
-const ARQUIVOS = ['/', '/index.html', '/manifest.json', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png', '/apple-touch-icon.png'];
-const ESTATICOS = new Set(['/manifest.json', '/icon-192.png', '/icon-512.png', '/icon-maskable-512.png', '/apple-touch-icon.png']);
+// Service Worker do app "Integrador" (versão PC)
+// Objetivo: permitir que o navegador ofereça "Instalar app" e evitar tela branca sem internet.
+// Guarda só o "shell" (HTML, manifest e ícones). Os dados (produtos, estoque, vendas, financeiro)
+// vêm sempre da API /api/odoo em tempo real, então o app precisa de internet para funcionar de verdade.
 
-self.addEventListener('install', (event) => {
-    event.waitUntil(
-        caches.open(VERSAO)
-            .then((cache) => Promise.all(ARQUIVOS.map((url) => cache.add(url).catch(() => {}))))
-            .then(() => self.skipWaiting())
-    );
+const CACHE_NAME = "deuris-pc-v2";
+const SHELL = ["/", "/index.html", "/manifest.json", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png"];
+
+self.addEventListener("install", (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) =>
+      // Um por um, para que a falta de um arquivo não derrube a instalação inteira.
+      Promise.all(SHELL.map((url) => cache.add(url).catch(() => {})))
+    )
+  );
+  self.skipWaiting();
 });
 
-self.addEventListener('activate', (event) => {
-    event.waitUntil(
-        caches.keys()
-            .then((nomes) => Promise.all(nomes.filter((n) => n !== VERSAO).map((n) => caches.delete(n))))
-            .then(() => self.clients.claim())
-    );
+self.addEventListener("activate", (event) => {
+  event.waitUntil(
+    caches.keys().then((names) =>
+      Promise.all(names.filter((n) => n !== CACHE_NAME).map((n) => caches.delete(n)))
+    )
+  );
+  self.clients.claim();
 });
 
-self.addEventListener('fetch', (event) => {
-    const req = event.request;
-    if (req.method !== 'GET') return;
+self.addEventListener("fetch", (event) => {
+  const req = event.request;
+  const url = new URL(req.url);
 
-    const url = new URL(req.url);
-    if (url.origin !== self.location.origin) return;
-    if (url.pathname.startsWith('/api/')) return;
+  // Nunca mexe em POST, na API do Odoo nem em requisições de outros domínios.
+  if (req.method !== "GET") return;
+  if (url.origin !== self.location.origin) return;
+  if (url.pathname.startsWith("/api/")) return;
 
-    // Abrir o app / recarregar a página: rede primeiro, cópia guardada se estiver sem internet
-    if (req.mode === 'navigate') {
-        event.respondWith(
-            fetch(req)
-                .then((resp) => {
-                    if (resp && resp.ok) {
-                        const copia = resp.clone();
-                        caches.open(VERSAO).then((c) => c.put('/', copia)).catch(() => {});
-                    }
-                    return resp;
-                })
-                .catch(() => caches.match('/').then((r) => r || caches.match('/index.html')))
-        );
-        return;
-    }
-
-    // Ícones e manifest: usa o guardado e atualiza em segundo plano
-    if (ESTATICOS.has(url.pathname)) {
-        event.respondWith(
-            caches.match(req).then((guardado) => {
-                const rede = fetch(req).then((resp) => {
-                    if (resp && resp.ok) {
-                        const copia = resp.clone();
-                        caches.open(VERSAO).then((c) => c.put(req, copia)).catch(() => {});
-                    }
-                    return resp;
-                }).catch(() => guardado);
-                return guardado || rede;
-            })
-        );
-    }
+  // Rede primeiro (sempre a versão mais nova); se estiver offline, usa o cache.
+  event.respondWith(
+    fetch(req)
+      .then((response) => {
+        if (response.ok) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
+        }
+        return response;
+      })
+      .catch(() =>
+        caches.match(req).then((hit) => hit || (req.mode === "navigate" ? caches.match("/index.html") : undefined))
+      )
+  );
 });
