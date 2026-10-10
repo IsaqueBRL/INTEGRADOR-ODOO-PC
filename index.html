@@ -13,6 +13,18 @@
     <link rel="manifest" href="/manifest.json">
     <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
     <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+    <script>
+        // App instalável (PWA): service worker + captura do aviso de instalação do navegador
+        window.__pwaPrompt = null;
+        window.addEventListener('beforeinstallprompt', function (e) {
+            e.preventDefault();
+            window.__pwaPrompt = e;
+            if (window.__pwaMostrar) window.__pwaMostrar();
+        });
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/service-worker.js', { scope: '/' }).catch(function (e) { console.warn('Service worker não registrado:', e); });
+        }
+    </script>
     <style>
         :root {
             --primary-color: #714B67;
@@ -48,6 +60,7 @@
         #installCard .tx b { display: block; font-size: 15px; color: var(--primary-color); }
         #btnInstalar { background: var(--primary-color); color: #fff; border: none; border-radius: 8px; padding: 10px 16px; font-size: 14px; font-weight: 700; cursor: pointer; }
         #btnInstalar:hover { background: var(--primary-hover); }
+        #installDica { display: none; margin-top: 10px; font-size: 13px; color: #555; background: #f6eff4; border-radius: 8px; padding: 10px 12px; line-height: 1.5; }
         #installFechar { background: none; border: none; color: #888; font-size: 18px; cursor: pointer; padding: 4px 6px; }
 
         .top-nav { display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; flex-wrap: wrap; gap: 10px; }
@@ -357,6 +370,7 @@
                 <button id="btnInstalar" type="button">Instalar</button>
                 <button id="installFechar" type="button" aria-label="Dispensar">&#10005;</button>
             </div>
+            <div id="installDica">Para instalar: clique no ícone de instalar na barra de endereço do navegador (à direita) ou abra o menu <b>&#8942;</b> e escolha <b>Salvar e compartilhar &rarr; Instalar página como app</b> (no Edge: <b>Aplicativos &rarr; Instalar este site como um aplicativo</b>).</div>
         </div>
     </div>
 
@@ -4166,45 +4180,45 @@
         document.getElementById('transferModal').style.display = 'none';
     }
 
-    /* ============ App instalável (PWA): service worker + botão Instalar ============ */
-    if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-            navigator.serviceWorker.register('/service-worker.js').catch(e => console.warn('Service worker não registrado:', e));
-        });
-    }
-
-    (function () {
-        const card = document.getElementById('installCard'), btn = document.getElementById('btnInstalar');
-        if (!card || !btn) return;
-        const jaInstalado = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-        const dispensado = () => { try { return localStorage.getItem('installDispensado') === '1'; } catch (e) { return false; } };
-        if (jaInstalado || dispensado()) return;
-
-        let promptInstalar = null;
-
-        // Chrome / Edge: o navegador avisa quando o app pode ser instalado
-        window.addEventListener('beforeinstallprompt', (e) => {
-            e.preventDefault();
-            promptInstalar = e;
-            card.classList.add('show');
-        });
-
-        btn.addEventListener('click', async () => {
-            if (!promptInstalar) return;
-            promptInstalar.prompt();
-            await promptInstalar.userChoice.catch(() => {});
-            promptInstalar = null;
-            card.classList.remove('show');
-        });
-
-        window.addEventListener('appinstalled', () => { card.classList.remove('show'); });
-
-        document.getElementById('installFechar').addEventListener('click', () => {
-            card.classList.remove('show');
-            try { localStorage.setItem('installDispensado', '1'); } catch (e) {}
-        });
-    })();
 </script>
 
+<script>
+/* Cartão "Instalar o app" da tela inicial */
+(function () {
+    var card = document.getElementById('installCard'), btn = document.getElementById('btnInstalar');
+    var dica = document.getElementById('installDica'), fechar = document.getElementById('installFechar');
+    if (!card || !btn) return;
+    var jaInstalado = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    var dispensado = function () { try { return localStorage.getItem('installDispensado') === '1'; } catch (e) { return false; } };
+    if (jaInstalado || dispensado()) return;
+
+    function mostrar() {
+        if (window.__pwaPrompt) { btn.style.display = ''; dica.style.display = 'none'; }
+        else { btn.style.display = 'none'; dica.style.display = 'block'; }
+        card.classList.add('show');
+    }
+    window.__pwaMostrar = mostrar;
+
+    btn.addEventListener('click', function () {
+        var p = window.__pwaPrompt;
+        if (!p) return;
+        p.prompt();
+        Promise.resolve(p.userChoice).catch(function () {}).then(function () {
+            window.__pwaPrompt = null;
+            card.classList.remove('show');
+        });
+    });
+    window.addEventListener('appinstalled', function () { card.classList.remove('show'); });
+    fechar.addEventListener('click', function () {
+        card.classList.remove('show');
+        try { localStorage.setItem('installDispensado', '1'); } catch (e) {}
+    });
+
+    // o navegador já avisou que dá para instalar: mostra o botão.
+    // Se não avisar em alguns segundos, mostra as instruções manuais (ícone na barra de endereço / menu do navegador).
+    if (window.__pwaPrompt) mostrar();
+    else setTimeout(function () { if (!window.__pwaPrompt) mostrar(); }, 2500);
+})();
+</script>
 </body>
 </html>
