@@ -1717,11 +1717,15 @@
             });
             const data = await response.json();
             if (!data.result) return;
+            // nome curto ("CASA/Stock" -> "CASA"); se dois locais ficariam com o mesmo nome, mantém o completo nesses
+            const contagem = {};
+            data.result.forEach(l => { const n = nomeLocalCurto(l.complete_name); contagem[n] = (contagem[n] || 0) + 1; });
+            const rotulo = l => { const n = nomeLocalCurto(l.complete_name); return contagem[n] > 1 ? l.complete_name : n; };
             configs.forEach(cfg => {
                 const select = document.getElementById(cfg.id);
                 const atual = select.value;
                 select.innerHTML = `<option value="">${cfg.placeholder}</option><option value="all">${cfg.todos}</option>` +
-                    data.result.map(l => `<option value="${l.id}">${l.complete_name}</option>`).join('');
+                    data.result.map(l => `<option value="${l.id}">${rotulo(l)}</option>`).join('');
                 if (atual && (atual === 'all' || data.result.some(l => String(l.id) === atual))) select.value = atual;
             });
         } catch (e) { /* os filtros ficam só com as opções padrão */ }
