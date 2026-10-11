@@ -1432,7 +1432,18 @@
     let isCurrentTransferEditable = false;
     let transferHasChanges = false;
 
+    // "CASA/Stock" -> "CASA" (só o que vem antes da primeira barra)
+    function nomeLocalCurto(nome) {
+        if (!nome || nome === '-') return nome || '-';
+        return String(nome).split('/')[0].trim();
+    }
+
     function mostrarTela(idTela) {
+        // Saindo do Financeiro: zera os filtros e a lista do extrato
+        const finEl = document.getElementById('financeiroSection');
+        if (idTela !== 'financeiroSection' && finEl && getComputedStyle(finEl).display !== 'none') {
+            resetarExtrato();
+        }
         const homeEl = document.getElementById('homeSection');
         homeEl.style.display = 'none';
         homeEl.classList.remove('active-section'); // essa classe usa !important e mantinha o menu visível
@@ -1480,6 +1491,45 @@
         if (!barra) return;
         const btn = Array.from(barra.querySelectorAll('button')).find(b => b.textContent.trim() === 'Pesquisar');
         if (btn) { e.preventDefault(); btn.click(); }
+    });
+
+    /* ESC = voltar: fecha o pop-up de cima; sem pop-up aberto, volta ao menu principal */
+    const FECHAR_MODAL = {
+        paymentModal: () => fecharModalPagamento(),
+        paymentsListModal: () => fecharModalListaPagamentos(),
+        saleModal: () => fecharSaleModal(),
+        invoiceModal: () => fecharModalFaturaDetalhe(),
+        transferModal: () => fecharTransferModal(),
+        accountTransferModal: () => fecharModalTransferenciaContas(),
+        ajusteSaldoModal: () => fecharModalAjusteSaldo(),
+        ajusteEstoqueModal: () => fecharModalAjusteEstoque(),
+        editProductModal: () => fecharModalEditProduto(),
+        creditoModal: () => fecharModalCredito(),
+        createPartnerModal: () => fecharModalParceiro()
+    };
+    document.addEventListener('keydown', e => {
+        if (e.key !== 'Escape' || e.defaultPrevented) return;
+
+        // 1) aviso/confirmação personalizado
+        const custom = document.getElementById('customModal');
+        if (custom && custom.classList.contains('active')) { e.preventDefault(); fecharModalCustom(false); return; }
+
+        // 2) seletor de produto: tem o próprio tratamento do Esc
+        const picker = document.getElementById('prodPickerPanel');
+        if (picker && picker.style.display !== 'none' && picker.style.display !== '') return;
+
+        // 3) pop-up aberto mais ao topo
+        const abertos = Array.from(document.querySelectorAll('.modal-overlay')).filter(m => getComputedStyle(m).display !== 'none');
+        if (abertos.length) {
+            e.preventDefault();
+            const topo = abertos.reduce((a, b) => (Number(getComputedStyle(b).zIndex) || 0) >= (Number(getComputedStyle(a).zIndex) || 0) ? b : a);
+            if (FECHAR_MODAL[topo.id]) FECHAR_MODAL[topo.id](); else topo.style.display = 'none';
+            return;
+        }
+
+        // 4) sem pop-up: volta ao menu principal
+        const home = document.getElementById('homeSection');
+        if (home && getComputedStyle(home).display === 'none') { e.preventDefault(); mostrarTela('homeSection'); }
     });
 
     /* FILTRO DE CATEGORIAS (só categorias que têm produtos de venda) */
@@ -1862,7 +1912,7 @@
             let html = "";
 
             data.result.forEach(item => {
-                const locationName = Array.isArray(item.location_id) ? item.location_id[1] : "-";
+                const locationName = Array.isArray(item.location_id) ? nomeLocalCurto(item.location_id[1]) : "-";
                 const productName = Array.isArray(item.product_id) ? item.product_id[1] : "-";
                 const qty = item.quantity ?? 0;
                 const categoria = Array.isArray(item.categ_id) ? item.categ_id[1] : "-";
@@ -2212,6 +2262,20 @@
             btn.innerText = 'Lançar';
             btn.disabled = false;
         }
+    }
+
+    // Limpa os filtros do extrato (campos + filtro aplicado) e volta a lista ao estado inicial
+    function resetarExtrato() {
+        ['extratoParceiro', 'extratoConta', 'extratoDataDe', 'extratoDataAte'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.value = '';
+            delete filtrosAplicados[id];
+        });
+        extratoReqId++; // ignora resposta de busca que ainda esteja em andamento
+        const status = document.getElementById('statusExtrato');
+        const results = document.getElementById('resultsExtrato');
+        if (status) status.innerText = 'Escolha um parceiro, uma conta ou um período para ver as movimentações.';
+        if (results) results.innerHTML = '';
     }
 
     function limparFiltrosExtrato() {
@@ -3925,7 +3989,7 @@
         if (!valor) return '-';
         const d = new Date(String(valor).replace(' ', 'T') + 'Z');
         if (isNaN(d.getTime())) return '-';
-        return d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+        return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
     }
 
     // Traz só os produtos que têm estoque no local de origem escolhido
@@ -4055,8 +4119,8 @@
             let html = "";
 
             transfers.forEach(t => {
-                const de = Array.isArray(t.location_id) ? t.location_id[1] : '-';
-                const para = Array.isArray(t.location_dest_id) ? t.location_dest_id[1] : '-';
+                const de = Array.isArray(t.location_id) ? nomeLocalCurto(t.location_id[1]) : '-';
+                const para = Array.isArray(t.location_dest_id) ? nomeLocalCurto(t.location_dest_id[1]) : '-';
                 const meta = getTransferStatusMeta(t.state);
 
                 html += `
