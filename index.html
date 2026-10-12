@@ -108,6 +108,9 @@
         .vs-confirmado { background-color: #fff8e1; color: #b28704; }
         .vs-cancelado { background-color: #ffebee; color: #c62828; }
         .vs-pago { background-color: #e8f5e9; color: #2e7d32; }
+        .vs-parcial { background-color: #e3f2fd; color: #1565c0; }
+        .sale-totals b.pago { color: var(--success-color); }
+        .sale-totals b.pendente { color: var(--warning-color); }
         /* SOBRE DIAS: azul = longe, amarelo = perto, vermelho = vencida */
         .dias-longe { color: #1976d2; font-weight: 700; }
         .dias-perto { color: #d39e00; font-weight: 700; }
@@ -516,6 +519,7 @@
                 <option value="all">Todos os status</option>
                 <option value="draft">Orçamento</option>
                 <option value="sale">Confirmado</option>
+                <option value="partial">Parcialmente Pago</option>
                 <option value="paid">Pago</option>
                 <option value="cancel">Cancelado</option>
             </select>
@@ -797,7 +801,9 @@
 <div class="modal-overlay" id="paymentModal" style="z-index: 1100;">
     <div class="modal" style="max-width: 460px;">
         <h2>Pagar Fatura</h2>
-        <div id="pgTotalInfo" style="font-size:14px;color:#555;margin-bottom:8px;"></div>
+        <div id="pgTotalInfo" style="font-size:14px;color:#555;"></div>
+        <div id="pgPagoInfo" style="font-size:14px;color:#555;margin-top:2px;display:none;"></div>
+        <div style="margin-bottom:8px;"></div>
 
         <div class="pg-cred" id="pgCredBox" style="display:none;">
             <label class="pg-chk"><input type="checkbox" id="pgCredChk" onchange="pgToggleCred()"> <span id="pgCredLabel"></span></label>
@@ -886,6 +892,8 @@
         <div class="sale-totals">
             <div><span>Valor Total:</span> <b id="saleTotalVal">R$ 0.00</b></div>
             <div><span>Total de Desconto:</span> <b id="saleTotalDesc" class="desc">R$ 0.00</b></div>
+            <div id="saleTotalPagoRow" style="display: none;"><span>Valor Pago:</span> <b id="saleTotalPago" class="pago">R$ 0.00</b></div>
+            <div id="saleTotalPendenteRow" style="display: none;"><span>Valor Pendente:</span> <b id="saleTotalPendente" class="pendente">R$ 0.00</b></div>
             <div class="liquido"><span>Total Líquido:</span> <b id="saleTotalLiq">R$ 0.00</b></div>
         </div>
 
@@ -1229,6 +1237,19 @@
     let currentOrderId = null;
     let currentInvoiceId = null;
     let currentOrderTotal = 0;
+    let currentOrderPaid = 0; // quanto da fatura já foi pago (só > 0 quando está parcialmente paga)
+
+    // Mostra/esconde "Valor Pago" e "Valor Pendente" nos totais da venda
+    function mostrarPagoPendente(pago, pendente) {
+        const fmt = v => 'R$ ' + Number(v || 0).toFixed(2);
+        const mostrar = pago > 0.004;
+        document.getElementById('saleTotalPagoRow').style.display = mostrar ? 'flex' : 'none';
+        document.getElementById('saleTotalPendenteRow').style.display = mostrar ? 'flex' : 'none';
+        if (mostrar) {
+            document.getElementById('saleTotalPago').innerText = fmt(pago);
+            document.getElementById('saleTotalPendente').innerText = fmt(pendente);
+        }
+    }
     let availableProducts = [];
 
     // Texto da opção de produto (mostra o saldo quando o produto veio filtrado por armazém)
@@ -1958,6 +1979,7 @@
         if (sale.state === 'cancel') return { label: 'Cancelado', cls: 'vs-cancelado' };
         if (sale.state === 'draft' || sale.state === 'sent') return { label: 'Orçamento', cls: 'vs-orcamento' };
         if (sale.payment_summary === 'pago') return { label: 'Pago', cls: 'vs-pago' };
+        if (sale.payment_summary === 'parcial') return { label: 'Parcialmente Pago', cls: 'vs-parcial' };
         return { label: 'Confirmado', cls: 'vs-confirmado' };
     }
 
@@ -2485,6 +2507,8 @@
         currentOrderId = null;
         currentInvoiceId = null;
         currentOrderTotal = 0;
+        currentOrderPaid = 0;
+        mostrarPagoPendente(0, 0);
         linesToRemove = [];
         availableProducts = [];
         isCurrentInvoiceEditable = true;
@@ -2563,6 +2587,15 @@
             const invoice = (data.invoices && data.invoices.length > 0) ? (data.invoices.find(i => i.state !== 'cancel') || data.invoices[0]) : null;
             currentInvoiceId = invoice ? invoice.id : null;
             if (invoice && invoice.amount_total) currentOrderTotal = invoice.amount_total;
+
+            // Pagamento parcial: valor já pago e valor que falta pagar
+            currentOrderPaid = 0;
+            let valorPendente = 0;
+            if (invoice && invoice.payment_state === 'partial') {
+                valorPendente = Math.max(0, Math.round((Number(invoice.amount_residual) || 0) * 100) / 100);
+                currentOrderPaid = Math.max(0, Math.round(((Number(invoice.amount_total) || 0) - valorPendente) * 100) / 100);
+            }
+            mostrarPagoPendente(currentOrderPaid, valorPendente);
 
             document.getElementById('saleModalTitle').innerText = `Pedido ${order.name || 'Novo'}`;
             
@@ -2886,10 +2919,14 @@
         try {
             await carregarDiarios();
             const primeira = (availableJournals || []).find(j => j.has_journal !== false);
-            pagTotal = pgNum(currentOrderTotal);
+            // Só cobra o que falta pagar (total da venda menos o que já foi pago)
+            pagTotal = pgNum(Math.max(0, currentOrderTotal - currentOrderPaid));
             pagCredDisp = 0;
             pagLinhas = [{ conta: primeira ? String(primeira.id) : '', valor: pagTotal, auto: true }];
-            document.getElementById('pgTotalInfo').textContent = 'Total da venda: ' + pgFmt(pagTotal);
+            document.getElementById('pgTotalInfo').textContent = 'Total da venda: ' + pgFmt(currentOrderTotal);
+            const pagoInfo = document.getElementById('pgPagoInfo');
+            pagoInfo.style.display = currentOrderPaid > 0.004 ? 'block' : 'none';
+            pagoInfo.textContent = 'Valor já pago: ' + pgFmt(currentOrderPaid);
             document.getElementById('payDateInput').value = hojeISO();
             document.getElementById('pgCredChk').checked = false;
             document.getElementById('pgCredBox').classList.remove('on');
@@ -3729,6 +3766,9 @@
             const invoice = data.invoice;
             currentInvoiceId = invoice.id;
             currentOrderTotal = invoice.amount_total ?? 0;
+            currentOrderPaid = invoice.payment_state === 'partial'
+                ? Math.max(0, Math.round(((invoice.amount_total || 0) - (invoice.amount_residual || 0)) * 100) / 100)
+                : 0;
 
             const isEditable = invoice.state === 'draft';
             const isPaid = invoice.payment_state === 'paid' || invoice.payment_state === 'in_payment';
