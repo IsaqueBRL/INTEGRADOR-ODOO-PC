@@ -1869,6 +1869,9 @@ export default async function handler(req, res) {
             if (warehouseIds.length > 0) {
                 domain.push(['warehouse_id', 'in', warehouseIds]);
             }
+            // período da "Data do pedido" (já em UTC, vindo do painel)
+            if (body.date_from) domain.push(['date_order', '>=', body.date_from]);
+            if (body.date_to) domain.push(['date_order', '<=', body.date_to]);
             // Orçamento = draft+sent, Confirmado = sale+done ainda NÃO pago, Pago = sale+done com fatura(s) paga(s), Cancelado = cancel
             const statusGroups = { draft: ['draft', 'sent'], sale: ['sale', 'done'], paid: ['sale', 'done'], partial: ['sale', 'done'], cancel: ['cancel'] };
             // aceita vários status (order_statuses) e, por compatibilidade, um só (order_status)
