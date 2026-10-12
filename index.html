@@ -109,6 +109,9 @@
         .vs-cancelado { background-color: #ffebee; color: #c62828; }
         .vs-pago { background-color: #e8f5e9; color: #2e7d32; }
         .vs-parcial { background-color: #e3f2fd; color: #1565c0; }
+        /* Venda totalmente paga: campos e botões da tela ficam com aparência de travados */
+        #saleModal.venda-paga .modal input, #saleModal.venda-paga .modal select { background: #f3f3f3; color: #777; cursor: not-allowed; }
+        #saleModal.venda-paga .modal .prod-picker-btn, #saleModal.venda-paga #btnAddLine, #saleModal.venda-paga .btn-remove-line { opacity: .5; cursor: not-allowed; }
         /* Filtro com várias opções (caixas de seleção) */
         .ms { position: relative; flex: 0 0 auto; width: 215px; }
         .ms-btn { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 15px; background: #fff; color: #333; cursor: pointer; font-family: inherit; text-align: left; }
@@ -2633,6 +2636,7 @@
 
         document.getElementById('saleModalTitle').innerText = 'Novo Pedido de Venda';
         document.getElementById('ribbonPagoBadge').style.display = 'none';
+        definirVendaTravada(false);
 
         const statusBadge = document.getElementById('saleStatusBadge');
         statusBadge.innerText = 'Orçamento';
@@ -2728,6 +2732,7 @@
             const isPaid = !!invoice && (invoice.payment_state === 'paid' || invoice.payment_state === 'in_payment');
 
             document.getElementById('ribbonPagoBadge').style.display = isPaid ? 'block' : 'none';
+            definirVendaTravada(isPaid); // venda totalmente paga: só os botões do canto inferior direito funcionam
 
             const statusBadge = document.getElementById('saleStatusBadge');
             statusBadge.innerText = statusMeta.label;
@@ -3856,6 +3861,58 @@
     function fecharSaleModal() {
         document.getElementById('saleModal').style.display = 'none';
     }
+
+    /* ------------------------------------------------------------
+       VENDA TOTALMENTE PAGA: tudo travado, exceto os botões do canto inferior direito
+       (Fechar / Pagamentos / Cancelar Pedido). Qualquer tentativa de alterar mostra um aviso.
+       Para alterar, os pagamentos precisam voltar para Provisório (botão "Pagamentos").
+       ------------------------------------------------------------ */
+    let vendaTravada = false;
+    let ultimoAvisoTravada = 0;
+
+    function definirVendaTravada(travada) {
+        vendaTravada = !!travada;
+        document.getElementById('saleModal').classList.toggle('venda-paga', vendaTravada);
+    }
+
+    function avisarVendaTravada() {
+        const agora = Date.now();
+        if (agora - ultimoAvisoTravada < 800) return; // evita abrir o aviso várias vezes seguidas
+        ultimoAvisoTravada = agora;
+        mostrarAlerta('Não dá para alterar esta venda, pois ela está totalmente paga.\n\nAs alterações só poderão ser feitas se os pagamentos estiverem em Provisório (use o botão "Pagamentos" e escolha "Editar (Voltar para Provisório)").', 'Venda totalmente paga');
+    }
+
+    (function () {
+        const modal = document.getElementById('saleModal');
+        // elementos que o usuário usaria para alterar algo; os botões de ação do rodapé ficam livres
+        const alvoDeAlteracao = t => {
+            if (!vendaTravada || !t || !t.closest) return null;
+            if (t.closest('#saleModalActions')) return null;
+            return t.closest('input, select, textarea, button, label');
+        };
+        const bloquear = e => {
+            if (!alvoDeAlteracao(e.target)) return;
+            e.preventDefault();
+            e.stopPropagation();
+            avisarVendaTravada(); // mousedown + click no mesmo gesto viram um aviso só (ver intervalo acima)
+        };
+        // fase de captura: roda antes dos onclick/onchange das próprias telas
+        ['mousedown', 'click', 'dblclick'].forEach(ev => modal.addEventListener(ev, bloquear, true));
+        modal.addEventListener('keydown', e => {
+            if (!alvoDeAlteracao(e.target)) return;
+            // Tab/Esc/Shift e as setas em campos de texto/número/data não alteram nada
+            if (['Tab', 'Shift', 'Escape'].includes(e.key)) return;
+            if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key) && e.target.tagName !== 'SELECT') return;
+            e.preventDefault();
+            e.stopPropagation();
+            avisarVendaTravada();
+        }, true);
+        modal.addEventListener('paste', e => { if (alvoDeAlteracao(e.target)) { e.preventDefault(); avisarVendaTravada(); } }, true);
+        modal.addEventListener('wheel', e => {
+            // evita mudar número/data girando o scroll em cima do campo
+            if (vendaTravada && e.target.closest && e.target.closest('input[type="number"], input[type="date"]') && document.activeElement === e.target) e.preventDefault();
+        }, { capture: true, passive: false });
+    })();
 
     /* ------------------------------------------------------------
        MODAL DE FATURA (revisão/edição do rascunho gerado pelo Pedido de Venda)
