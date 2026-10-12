@@ -525,8 +525,8 @@
             </div>
         </div>
 
-        <div class="search-box">
-            <input type="text" id="searchVendasInput" placeholder="Digite o número do pedido ou cliente...">
+        <div class="search-box filtros">
+            <input type="text" id="searchVendasInput" placeholder="Pedido ou cliente...">
             <div class="ms" id="vendasWarehouseMs" title="Filtrar por local/armazém (pode marcar mais de um)">
                 <input type="hidden" id="vendasWarehouseFilter" value="">
                 <button type="button" class="ms-btn" onclick="msAbrirFechar('vendasWarehouseFilter')"></button>
@@ -537,6 +537,12 @@
                 <button type="button" class="ms-btn" onclick="msAbrirFechar('vendasStatusFilter')"></button>
                 <div class="ms-panel"></div>
             </div>
+            <label class="filtro-campo">Período: de
+                <input type="date" id="vendasDataDe" title="Data do pedido a partir de">
+            </label>
+            <label class="filtro-campo">até
+                <input type="date" id="vendasDataAte" title="Data do pedido até">
+            </label>
             <button onclick="pesquisar('vendas', buscarVendas)">Pesquisar</button>
             <button type="button" class="btn-credito" onclick="abrirModalCredito()">+ Adicionar Créditos</button>
         </div>
@@ -1501,7 +1507,7 @@
     const FILTROS_TELA = {
         produtos: ['searchInput', 'categoryFilter'],
         estoque: ['searchEstoqueInput', 'locationFilter'],
-        vendas: ['searchVendasInput', 'vendasWarehouseFilter', 'vendasStatusFilter'],
+        vendas: ['searchVendasInput', 'vendasWarehouseFilter', 'vendasStatusFilter', 'vendasDataDe', 'vendasDataAte'],
         transferencias: ['searchTransferenciasInput', 'transferOrigemFilter', 'transferDestinoFilter', 'transferDataDe', 'transferDataAte'],
         financeiro: ['searchFinanceiroInput'],
         extrato: ['extratoParceiro', 'extratoConta', 'extratoDataDe', 'extratoDataAte']
@@ -2143,6 +2149,8 @@
         document.getElementById('searchVendasInput').value = '';
         msLimpar('vendasWarehouseFilter');
         msLimpar('vendasStatusFilter');
+        document.getElementById('vendasDataDe').value = '';
+        document.getElementById('vendasDataAte').value = '';
         carregarFiltroArmazensVendas();
         pesquisar('vendas', buscarVendas); // sem filtro, só mostra a orientação
     }
@@ -2194,10 +2202,12 @@
         // vários valores separados por vírgula; "all" (Todos) = sem filtro
         const warehouse_ids = localEscolhido.split(',').filter(v => v && v !== 'all');
         const order_statuses = statusEscolhido.split(',').filter(v => v && v !== 'all');
+        const dataDe = lerFiltro("vendasDataDe");
+        const dataAte = lerFiltro("vendasDataAte");
         const reqId = ++vendasReqId;
 
-        if (!query && !localEscolhido && !statusEscolhido) {
-            status.innerText = "Escolha um local, um status ou digite o pedido/cliente para ver os pedidos.";
+        if (!query && !localEscolhido && !statusEscolhido && !dataDe && !dataAte) {
+            status.innerText = "Escolha um local, um status, um período ou digite o pedido/cliente para ver os pedidos.";
             results.innerHTML = "";
             return;
         }
@@ -2209,7 +2219,7 @@
             const response = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: "get_sales", query, warehouse_ids, order_statuses })
+                body: JSON.stringify({ action: "get_sales", query, warehouse_ids, order_statuses, date_from: dataLocalParaOdoo(dataDe, false), date_to: dataLocalParaOdoo(dataAte, true) })
             });
 
             const data = await response.json();
