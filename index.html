@@ -114,13 +114,17 @@
         .ms-btn { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 15px; background: #fff; color: #333; cursor: pointer; font-family: inherit; text-align: left; }
         .ms-btn::after { content: '▾'; color: #777; flex-shrink: 0; }
         .ms-btn .ms-txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .ms-btn.vazio .ms-txt { color: #777; }
-        .ms-btn:hover { border-color: var(--primary-color); }
+        .search-box .ms-btn { background-color: var(--primary-color); color: #fff; border-color: var(--primary-color); font-weight: 600; text-align: left; }
+        .search-box .ms-btn:hover { background-color: var(--primary-hover); }
+        .search-box .ms-btn .ms-txt, .search-box .ms-btn.vazio .ms-txt { color: #fff; }
+        .search-box .ms-btn::after { color: #fff; }
         .ms-panel { display: none; position: absolute; top: calc(100% + 4px); left: 0; min-width: 100%; z-index: 1300; background: #fff; border: 1px solid var(--primary-color); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.2); padding: 4px; max-height: 300px; overflow-y: auto; }
         .ms-panel.open { display: block; }
-        .ms-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; cursor: pointer; font-size: 14px; color: #333; white-space: nowrap; margin: 0; font-weight: 500; }
+        .ms-item { display: flex; align-items: center; justify-content: flex-start; text-align: left; gap: 10px; padding: 9px 10px; border-radius: 6px; cursor: pointer; font-size: 14px; color: #333; white-space: nowrap; margin: 0; font-weight: 500; }
         .ms-item:hover { background: #f4eef2; }
-        .ms-item input { width: 16px; height: 16px; margin: 0; cursor: pointer; accent-color: var(--primary-color); }
+        /* .search-box input estica todo input (flex:1, padding, borda): aqui a caixa fica fixa, sempre na mesma coluna à esquerda */
+        .search-box .ms-item input[type="checkbox"] { flex: 0 0 16px; width: 16px; min-width: 16px; height: 16px; padding: 0; margin: 0; border: none; cursor: pointer; accent-color: var(--primary-color); }
+        .ms-item span { flex: 1; text-align: left; }
         .ms-item.todos { border-bottom: 1px solid var(--border-color); border-radius: 6px 6px 0 0; font-weight: 700; margin-bottom: 4px; }
         .sale-totals b.pago { color: var(--success-color); }
         .sale-totals b.pendente { color: var(--warning-color); }
