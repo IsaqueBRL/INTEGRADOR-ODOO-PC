@@ -109,6 +109,19 @@
         .vs-cancelado { background-color: #ffebee; color: #c62828; }
         .vs-pago { background-color: #e8f5e9; color: #2e7d32; }
         .vs-parcial { background-color: #e3f2fd; color: #1565c0; }
+        /* Filtro com várias opções (caixas de seleção) */
+        .ms { position: relative; flex: 0 0 auto; width: 215px; }
+        .ms-btn { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: 8px; font-size: 15px; background: #fff; color: #333; cursor: pointer; font-family: inherit; text-align: left; }
+        .ms-btn::after { content: '▾'; color: #777; flex-shrink: 0; }
+        .ms-btn .ms-txt { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ms-btn.vazio .ms-txt { color: #777; }
+        .ms-btn:hover { border-color: var(--primary-color); }
+        .ms-panel { display: none; position: absolute; top: calc(100% + 4px); left: 0; min-width: 100%; z-index: 1300; background: #fff; border: 1px solid var(--primary-color); border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.2); padding: 4px; max-height: 300px; overflow-y: auto; }
+        .ms-panel.open { display: block; }
+        .ms-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 6px; cursor: pointer; font-size: 14px; color: #333; white-space: nowrap; margin: 0; font-weight: 500; }
+        .ms-item:hover { background: #f4eef2; }
+        .ms-item input { width: 16px; height: 16px; margin: 0; cursor: pointer; accent-color: var(--primary-color); }
+        .ms-item.todos { border-bottom: 1px solid var(--border-color); border-radius: 6px 6px 0 0; font-weight: 700; margin-bottom: 4px; }
         .sale-totals b.pago { color: var(--success-color); }
         .sale-totals b.pendente { color: var(--warning-color); }
         /* SOBRE DIAS: azul = longe, amarelo = perto, vermelho = vencida */
@@ -510,19 +523,16 @@
 
         <div class="search-box">
             <input type="text" id="searchVendasInput" placeholder="Digite o número do pedido ou cliente...">
-            <select id="vendasWarehouseFilter" title="Filtrar por local/armazém" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:200px;cursor:pointer;">
-                <option value="">Selecione um local...</option>
-                <option value="all">Todos os locais</option>
-            </select>
-            <select id="vendasStatusFilter" title="Filtrar por status" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:200px;cursor:pointer;">
-                <option value="">Selecione um status...</option>
-                <option value="all">Todos os status</option>
-                <option value="draft">Orçamento</option>
-                <option value="sale">Confirmado</option>
-                <option value="partial">Parcialmente Pago</option>
-                <option value="paid">Pago</option>
-                <option value="cancel">Cancelado</option>
-            </select>
+            <div class="ms" id="vendasWarehouseMs" title="Filtrar por local/armazém (pode marcar mais de um)">
+                <input type="hidden" id="vendasWarehouseFilter" value="">
+                <button type="button" class="ms-btn" onclick="msAbrirFechar('vendasWarehouseFilter')"></button>
+                <div class="ms-panel"></div>
+            </div>
+            <div class="ms" id="vendasStatusMs" title="Filtrar por status (pode marcar mais de um)">
+                <input type="hidden" id="vendasStatusFilter" value="">
+                <button type="button" class="ms-btn" onclick="msAbrirFechar('vendasStatusFilter')"></button>
+                <div class="ms-panel"></div>
+            </div>
             <button onclick="pesquisar('vendas', buscarVendas)">Pesquisar</button>
             <button type="button" class="btn-credito" onclick="abrirModalCredito()">+ Adicionar Créditos</button>
         </div>
@@ -2011,10 +2021,105 @@
         }
     }
 
+    /* ------------------------------------------------------------
+       FILTRO COM VÁRIAS OPÇÕES (caixas de seleção)
+       O valor fica num <input hidden> com os valores separados por vírgula (ex.: "3,5"),
+       então lerFiltro()/pesquisar() continuam funcionando como nos outros filtros.
+       "Todos ..." é exclusivo: marcar ele desmarca os outros e vice-versa.
+       ------------------------------------------------------------ */
+    const MS = {};
+
+    function msEsc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+    function msIniciar(id, placeholder, todosLabel, opcoes) {
+        MS[id] = { sel: new Set(), placeholder, todosLabel, opcoes: opcoes || [] };
+        msRender(id);
+    }
+
+    function msDefinirOpcoes(id, opcoes) {
+        const m = MS[id];
+        if (!m) return;
+        m.opcoes = opcoes;
+        // mantém só as seleções que ainda existem
+        m.sel = new Set([...m.sel].filter(v => v === 'all' || opcoes.some(o => o.value === v)));
+        msRender(id);
+    }
+
+    function msLimpar(id) {
+        if (!MS[id]) return;
+        MS[id].sel = new Set();
+        msRender(id);
+    }
+
+    function msRender(id) {
+        const m = MS[id];
+        if (!m) return;
+        const hidden = document.getElementById(id);
+        const wrap = hidden.closest('.ms');
+        const btn = wrap.querySelector('.ms-btn');
+        const panel = wrap.querySelector('.ms-panel');
+        const marcados = [...m.sel];
+        hidden.value = marcados.join(',');
+
+        let texto;
+        if (marcados.length === 0) texto = m.placeholder;
+        else if (m.sel.has('all')) texto = m.todosLabel;
+        else if (marcados.length === 1) texto = (m.opcoes.find(o => o.value === marcados[0]) || {}).label || marcados[0];
+        else texto = marcados.length + ' selecionados';
+        btn.className = 'ms-btn' + (marcados.length === 0 ? ' vazio' : '');
+        btn.innerHTML = `<span class="ms-txt">${msEsc(texto)}</span>`;
+
+        panel.innerHTML =
+            `<label class="ms-item todos"><input type="checkbox" value="all" ${m.sel.has('all') ? 'checked' : ''}> <span>${msEsc(m.todosLabel)}</span></label>` +
+            m.opcoes.map(o => `<label class="ms-item"><input type="checkbox" value="${msEsc(o.value)}" ${m.sel.has(o.value) ? 'checked' : ''}> <span>${msEsc(o.label)}</span></label>`).join('');
+        panel.querySelectorAll('input[type="checkbox"]').forEach(chk => {
+            chk.addEventListener('change', () => {
+                if (chk.checked) {
+                    if (chk.value === 'all') m.sel = new Set(['all']);
+                    else { m.sel.delete('all'); m.sel.add(chk.value); }
+                } else {
+                    m.sel.delete(chk.value);
+                }
+                msRender(id);
+                panel.classList.add('open'); // continua aberto para marcar mais opções
+            });
+        });
+    }
+
+    function msFecharTodos(exceto) {
+        document.querySelectorAll('.ms-panel.open').forEach(p => { if (p !== exceto) p.classList.remove('open'); });
+    }
+
+    function msAbrirFechar(id) {
+        const panel = document.getElementById(id).closest('.ms').querySelector('.ms-panel');
+        const abrir = !panel.classList.contains('open');
+        msFecharTodos();
+        if (abrir) panel.classList.add('open');
+    }
+
+    // fecha ao clicar fora; Esc fecha só a lista (antes de qualquer outro tratamento do Esc)
+    document.addEventListener('mousedown', e => {
+        if (!e.target.closest || !e.target.closest('.ms')) msFecharTodos();
+    });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && document.querySelector('.ms-panel.open')) {
+            e.preventDefault();
+            msFecharTodos();
+        }
+    }, true);
+
+    msIniciar('vendasWarehouseFilter', 'Selecione um local...', 'Todos os locais', []);
+    msIniciar('vendasStatusFilter', 'Selecione um status...', 'Todos os status', [
+        { value: 'draft', label: 'Orçamento' },
+        { value: 'sale', label: 'Confirmado' },
+        { value: 'partial', label: 'Parcialmente Pago' },
+        { value: 'paid', label: 'Pago' },
+        { value: 'cancel', label: 'Cancelado' }
+    ]);
+
     let vendasWarehousesCarregados = false;
     async function carregarFiltroArmazensVendas() {
         if (vendasWarehousesCarregados) return;
-        const select = document.getElementById("vendasWarehouseFilter");
         try {
             const response = await fetch('/api/odoo', {
                 method: 'POST',
@@ -2023,10 +2128,7 @@
             });
             const data = await response.json();
             if (!data.result) return;
-            const atual = select.value;
-            select.innerHTML = '<option value="">Selecione um local...</option><option value="all">Todos os locais</option>' +
-                data.result.map(w => `<option value="${w.id}">${w.name}</option>`).join('');
-            select.value = atual;
+            msDefinirOpcoes('vendasWarehouseFilter', data.result.map(w => ({ value: String(w.id), label: w.name })));
             vendasWarehousesCarregados = true;
         } catch (e) { /* tenta de novo na próxima pesquisa */ }
     }
@@ -2035,8 +2137,8 @@
     function abrirTelaVendas() {
         mostrarTela('vendasSection');
         document.getElementById('searchVendasInput').value = '';
-        document.getElementById('vendasWarehouseFilter').value = '';
-        document.getElementById('vendasStatusFilter').value = '';
+        msLimpar('vendasWarehouseFilter');
+        msLimpar('vendasStatusFilter');
         carregarFiltroArmazensVendas();
         pesquisar('vendas', buscarVendas); // sem filtro, só mostra a orientação
     }
@@ -2085,8 +2187,9 @@
         const results = document.getElementById("resultsVendas");
         const localEscolhido = lerFiltro("vendasWarehouseFilter");
         const statusEscolhido = lerFiltro("vendasStatusFilter");
-        const warehouse_id = localEscolhido === 'all' ? '' : localEscolhido;
-        const order_status = statusEscolhido === 'all' ? '' : statusEscolhido;
+        // vários valores separados por vírgula; "all" (Todos) = sem filtro
+        const warehouse_ids = localEscolhido.split(',').filter(v => v && v !== 'all');
+        const order_statuses = statusEscolhido.split(',').filter(v => v && v !== 'all');
         const reqId = ++vendasReqId;
 
         if (!query && !localEscolhido && !statusEscolhido) {
@@ -2102,7 +2205,7 @@
             const response = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: "get_sales", query, warehouse_id, order_status })
+                body: JSON.stringify({ action: "get_sales", query, warehouse_ids, order_statuses })
             });
 
             const data = await response.json();
