@@ -1863,27 +1863,32 @@ export default async function handler(req, res) {
                 domain.push('|', ['name', 'ilike', query], ['partner_id.name', 'ilike', query]);
             }
             // Filtros: local/armazém e status (Orçamento = draft+sent, Confirmado = sale+done, Cancelado = cancel)
-            if (body.warehouse_id) {
-                domain.push(['warehouse_id', '=', parseInt(body.warehouse_id, 10)]);
+            // aceita vários locais (warehouse_ids) e, por compatibilidade, um só (warehouse_id)
+            const warehouseIds = (Array.isArray(body.warehouse_ids) ? body.warehouse_ids : (body.warehouse_id ? [body.warehouse_id] : []))
+                .map(w => parseInt(w, 10)).filter(Boolean);
+            if (warehouseIds.length > 0) {
+                domain.push(['warehouse_id', 'in', warehouseIds]);
             }
             // Orçamento = draft+sent, Confirmado = sale+done ainda NÃO pago, Pago = sale+done com fatura(s) paga(s), Cancelado = cancel
             const statusGroups = { draft: ['draft', 'sent'], sale: ['sale', 'done'], paid: ['sale', 'done'], partial: ['sale', 'done'], cancel: ['cancel'] };
-            if (body.order_status && statusGroups[body.order_status]) {
-                domain.push(['state', 'in', statusGroups[body.order_status]]);
+            // aceita vários status (order_statuses) e, por compatibilidade, um só (order_status)
+            const statusSel = (Array.isArray(body.order_statuses) ? body.order_statuses : (body.order_status ? [body.order_status] : []))
+                .filter(s => statusGroups[s]);
+            if (statusSel.length > 0) {
+                const estados = [...new Set(statusSel.flatMap(s => statusGroups[s]))];
+                domain.push(['state', 'in', estados]);
             }
-            if (body.order_status === 'paid') {
-                // primeiro acha as faturas pagas e depois os pedidos ligados a elas (evita buscar por caminho em campo calculado)
-                const pagas = await execute("account.move", "search_read", [[["move_type", "=", "out_invoice"], ["state", "!=", "cancel"], ["payment_state", "in", ["paid", "in_payment"]]]], { fields: ["id"], order: "id desc", limit: 1000 }).catch(() => []);
-                if (!pagas || pagas.length === 0) return res.status(200).json({ result: [] });
-                domain.push(['invoice_ids', 'in', pagas.map(m => m.id)]);
+            // Se só foram pedidos "Pago" e/ou "Parcialmente Pago", já restringe aos pedidos com essas faturas
+            // (primeiro acha as faturas e depois os pedidos ligados a elas, evitando buscar por caminho em campo calculado)
+            if (statusSel.length > 0 && statusSel.every(s => s === 'paid' || s === 'partial')) {
+                const estadosPag = [];
+                if (statusSel.includes('paid')) estadosPag.push('paid', 'in_payment');
+                if (statusSel.includes('partial')) estadosPag.push('partial');
+                const faturasPag = await execute("account.move", "search_read", [[["move_type", "=", "out_invoice"], ["state", "!=", "cancel"], ["payment_state", "in", estadosPag]]], { fields: ["id"], order: "id desc", limit: 1000 }).catch(() => []);
+                if (!faturasPag || faturasPag.length === 0) return res.status(200).json({ result: [] });
+                domain.push(['invoice_ids', 'in', faturasPag.map(m => m.id)]);
             }
-            if (body.order_status === 'partial') {
-                // Parcialmente pago = fatura com pagamento parcial (payment_state "partial")
-                const parciais = await execute("account.move", "search_read", [[["move_type", "=", "out_invoice"], ["state", "!=", "cancel"], ["payment_state", "=", "partial"]]], { fields: ["id"], order: "id desc", limit: 1000 }).catch(() => []);
-                if (!parciais || parciais.length === 0) return res.status(200).json({ result: [] });
-                domain.push(['invoice_ids', 'in', parciais.map(m => m.id)]);
-            }
-            const filtraPorPagamento = body.order_status === 'paid' || body.order_status === 'sale' || body.order_status === 'partial';
+            const filtraPorPagamento = statusSel.some(s => s === 'paid' || s === 'sale' || s === 'partial');
 
             const orders = await execute("sale.order", "search_read", [domain], {
                 fields: ["id", "name", "partner_id", "amount_total", "state", "invoice_status", "invoice_ids", "warehouse_id", "date_order"],
@@ -1934,10 +1939,17 @@ export default async function handler(req, res) {
                 else if (ativas.length > 0) dueDate = ativas.map(i => i.invoice_date_due).sort().pop();
                 return { ...o, payment_summary: paymentSummary, due_date: dueDate, items: itensPorPedido[o.id] || [] };
             }).filter(o => {
-                if (body.order_status === 'paid') return o.payment_summary === 'pago';
-                if (body.order_status === 'partial') return o.payment_summary === 'parcial';
-                if (body.order_status === 'sale') return o.payment_summary !== 'pago' && o.payment_summary !== 'parcial';
-                return true;
+                if (statusSel.length === 0) return true;
+                // o pedido entra se casar com QUALQUER um dos status escolhidos
+                return statusSel.some(s => {
+                    if (s === 'draft') return o.state === 'draft' || o.state === 'sent';
+                    if (s === 'cancel') return o.state === 'cancel';
+                    const confirmado = o.state === 'sale' || o.state === 'done';
+                    if (s === 'paid') return confirmado && o.payment_summary === 'pago';
+                    if (s === 'partial') return confirmado && o.payment_summary === 'parcial';
+                    if (s === 'sale') return confirmado && o.payment_summary !== 'pago' && o.payment_summary !== 'parcial';
+                    return false;
+                });
             }).slice(0, 100);
 
             return res.status(200).json({ result });
