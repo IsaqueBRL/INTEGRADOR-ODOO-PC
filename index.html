@@ -3575,6 +3575,8 @@
 
         const state = order.state;
         const isPaid = !!invoice && (invoice.payment_state === 'paid' || invoice.payment_state === 'in_payment');
+        const temPagamento = isPaid || (!!invoice && invoice.payment_state === 'partial');
+        const btnReverter = `<button class="btn-action" style="background-color: var(--warning-color);" onclick="reverterPedido()">Reverter</button>`;
 
         if (state === 'cancel') {
             container.innerHTML += `<button class="btn-action" style="background-color: var(--warning-color);" onclick="reabrirComoOrcamento()">Reabrir como Orçamento</button>`;
@@ -3592,6 +3594,7 @@
             } else {
                 container.innerHTML += `<button class="btn-action" style="background-color: var(--primary-color);" onclick="gerarFaturaPedido()">Gerar Fatura</button>`;
             }
+            if (temPagamento) container.innerHTML += btnReverter;
             container.innerHTML += `<button class="btn-delete" onclick="cancelarPedido()">Cancelar Pedido</button>`;
         } else {
             // draft / sent (orçamento, ainda editável)
@@ -3638,6 +3641,61 @@
             return false;
         }
         return true;
+    }
+
+    /* Reverter venda paga: cancela todos os pagamentos em conta e devolve ao cliente, como crédito, o que foi pago com crédito */
+    let revertendoPedido = false;
+    async function reverterPedido() {
+        if (!currentOrderId || revertendoPedido) return;
+        revertendoPedido = true;
+        const idPedido = currentOrderId;
+        try {
+            const rp = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'preview_revert_sale', order_id: idPedido })
+            });
+            const pre = await rp.json();
+            if (pre.error) return alert(pre.error);
+
+            const pagamentos = pre.pagamentos || [];
+            const credito = Number(pre.credito) || 0;
+            if (pagamentos.length === 0 && credito <= 0.004) {
+                alert('Não encontrei pagamentos para reverter. A venda será atualizada.');
+                abrirDetalhesVenda(idPedido);
+                return;
+            }
+
+            let msg = 'Os pagamentos desta venda serão CANCELADOS e ela volta a ficar em aberto, para você fazer ajustes ou cancelar.';
+            if (pagamentos.length > 0) msg += '\n\n' + pagamentos.map(p => '• ' + (p.conta || 'Conta') + ': ' + pgFmt(p.valor)).join('\n');
+            if (credito > 0.004) msg += '\n\n' + pgFmt(credito) + ' pagos com crédito voltam como crédito do cliente.';
+            const confirmado = await mostrarConfirmacao(msg, 'Reverter venda?');
+            if (!confirmado) return;
+
+            const res = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'revert_sale_payments', order_id: idPedido })
+            });
+            const data = await res.json();
+
+            if (data.error) {
+                alert(data.error + (data.parcial ? '\n\nParte já foi revertida. A venda foi atualizada: confira e tente novamente.' : ''));
+            } else {
+                const partes = [];
+                const n = (data.cancelados || []).length;
+                if (n > 0) partes.push(n + ' pagamento(s) cancelado(s)');
+                if ((Number(data.credito_devolvido) || 0) > 0.004) partes.push(pgFmt(data.credito_devolvido) + ' devolvido(s) como crédito do cliente');
+                alert('Venda revertida com sucesso!' + (partes.length ? '\n\n' + partes.join('\n') : ''));
+            }
+            // recarrega a venda (liberada para ajustes) e atualiza a lista ao fundo
+            if (currentOrderId === idPedido) await abrirDetalhesVenda(idPedido);
+            buscarVendas();
+        } catch (e) {
+            alert('Erro de conexão ao tentar reverter a venda. Atualize a venda e confira o estado dos pagamentos antes de tentar de novo.');
+        } finally {
+            revertendoPedido = false;
+        }
     }
 
     async function cancelarPedido() {
@@ -3864,8 +3922,8 @@
 
     /* ------------------------------------------------------------
        VENDA TOTALMENTE PAGA: tudo travado, exceto os botões do canto inferior direito
-       (Fechar / Pagamentos / Cancelar Pedido). Qualquer tentativa de alterar mostra um aviso.
-       Para alterar, os pagamentos precisam voltar para Provisório (botão "Pagamentos").
+       (Fechar / Pagamentos / Reverter / Cancelar Pedido). Qualquer tentativa de alterar mostra um aviso.
+       Para alterar, reverta a venda (botão "Reverter").
        ------------------------------------------------------------ */
     let vendaTravada = false;
     let ultimoAvisoTravada = 0;
@@ -3879,7 +3937,7 @@
         const agora = Date.now();
         if (agora - ultimoAvisoTravada < 800) return; // evita abrir o aviso várias vezes seguidas
         ultimoAvisoTravada = agora;
-        mostrarAlerta('Não dá para alterar esta venda, pois ela está totalmente paga.\n\nAs alterações só poderão ser feitas se os pagamentos estiverem em Provisório (use o botão "Pagamentos" e escolha "Editar (Voltar para Provisório)").', 'Venda totalmente paga');
+        mostrarAlerta('Não dá para alterar esta venda, pois ela está totalmente paga.\n\nReverta a venda (botão "Reverter", no canto inferior direito) para fazer ajustes ou cancelar.', 'Venda totalmente paga');
     }
 
     (function () {
