@@ -1229,6 +1229,134 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: true, devolvidos, warnings, credito_devolvido: creditoDevolvido });
         }
 
+        // ---- Reverter venda paga: analisa o que foi pago (pagamentos em contas x crédito do cliente) ----
+        // Pagamento em conta = account.payment criado para ESTA fatura  -> será cancelado
+        // Crédito do cliente = conciliação com um pagamento/nota que já existia -> só se desfaz a conciliação (o valor volta como crédito)
+        const analisarPagamentosDaVenda = async (oid) => {
+            const ped = await execute("sale.order", "read", [[oid]], { fields: ["invoice_ids", "state"] });
+            if (!ped || !ped[0]) return null;
+            const idsF = ped[0].invoice_ids || [];
+            const faturas = idsF.length
+                ? (await execute("account.move", "search_read", [[["id", "in", idsF], ["state", "=", "posted"]]], { fields: ["id", "name", "amount_total", "amount_residual"] })) || []
+                : [];
+            const resultado = [];
+            for (const f of faturas) {
+                const pago = r2c(Number(f.amount_total) - Number(f.amount_residual));
+                if (pago <= 0.004) continue;
+                const linhasF = (await execute("account.move.line", "search_read", [[["move_id", "=", f.id], LINHA_RECEBER_C]], { fields: ["id"] })) || [];
+                const idsL = linhasF.map(l => l.id);
+                if (idsL.length === 0) continue;
+                const parciais = (await execute("account.partial.reconcile", "search_read", [["|", ["debit_move_id", "in", idsL], ["credit_move_id", "in", idsL]]], {
+                    fields: ["id", "debit_move_id", "credit_move_id", "amount", "create_date"]
+                })) || [];
+                const contraDe = pa => (idsL.includes(pa.debit_move_id[0]) ? pa.credit_move_id[0] : pa.debit_move_id[0]);
+                const linhasContra = parciais.length
+                    ? (await execute("account.move.line", "read", [parciais.map(contraDe)], { fields: ["id", "move_id"] })) || []
+                    : [];
+                const moveDaLinha = {};
+                linhasContra.forEach(l => { moveDaLinha[l.id] = l.move_id[0]; });
+
+                const porMove = {};
+                parciais.forEach(pa => {
+                    const mid = moveDaLinha[contraDe(pa)];
+                    if (!mid) return;
+                    (porMove[mid] = porMove[mid] || []).push(pa);
+                });
+
+                const grupos = [];
+                for (const mid of Object.keys(porMove).map(Number)) {
+                    const pas = porMove[mid];
+                    const valor = r2c(pas.reduce((t, pa) => t + Number(pa.amount), 0));
+                    const pays = (await execute("account.payment", "search_read", [[["move_id", "=", mid]]], {
+                        fields: ["id", "name", "amount", "state", "journal_id", "create_date", "reconciled_invoice_ids"]
+                    }).catch(() => [])) || [];
+                    let tipo = "credito", pay = null;
+                    if (pays.length > 0) {
+                        const p = pays[0];
+                        const mv = (await execute("account.move", "read", [[mid]], { fields: ["ref"] }).catch(() => [])) || [];
+                        const ref = String((mv[0] && mv[0].ref) || "");
+                        const refBate = !!f.name && f.name !== "/" && ref.includes(f.name);
+                        // pagamento registrado nesta fatura: conciliado no mesmo instante em que foi criado
+                        const t0 = Date.parse(String(p.create_date).replace(" ", "T") + "Z");
+                        const pertoNoTempo = pas.some(pa => Math.abs(Date.parse(String(pa.create_date).replace(" ", "T") + "Z") - t0) < 30000);
+                        if (refBate || pertoNoTempo) { tipo = "pagamento"; pay = p; }
+                    }
+                    grupos.push({ moveId: mid, tipo, pay, parciais: pas, valor });
+                }
+                // pagamentos em conta primeiro, depois o crédito
+                grupos.sort((a, b) => (a.tipo === "pagamento" ? 0 : 1) - (b.tipo === "pagamento" ? 0 : 1));
+                resultado.push({ fatura: f, pago, grupos });
+            }
+            return resultado;
+        };
+
+        // AÇÃO: PRÉVIA DA REVERSÃO (só leitura): o que será cancelado e o que volta como crédito
+        if (action === "preview_revert_sale") {
+            const { order_id } = body;
+            if (!order_id) return res.status(400).json({ error: "ID do pedido é obrigatório." });
+            const analise = await analisarPagamentosDaVenda(Number(order_id));
+            if (!analise) return res.status(404).json({ error: "Pedido de venda não encontrado." });
+            const pagamentos = [];
+            let credito = 0;
+            analise.forEach(a => a.grupos.forEach(g => {
+                if (g.tipo === "pagamento") pagamentos.push({ nome: g.pay.name, valor: g.valor, conta: Array.isArray(g.pay.journal_id) ? g.pay.journal_id[1] : "" });
+                else credito = r2c(credito + g.valor);
+            }));
+            return res.status(200).json({ pagamentos, credito });
+        }
+
+        // AÇÃO: REVERTER VENDA PAGA — cancela TODOS os pagamentos em conta e devolve ao cliente, como crédito, o que foi pago com crédito
+        if (action === "revert_sale_payments") {
+            const { order_id } = body;
+            if (!order_id) return res.status(400).json({ error: "ID do pedido é obrigatório." });
+            const oid = Number(order_id);
+            const analise = await analisarPagamentosDaVenda(oid);
+            if (!analise) return res.status(404).json({ error: "Pedido de venda não encontrado." });
+            if (analise.length === 0) return res.status(200).json({ success: true, cancelados: [], credito_devolvido: 0, nada: true });
+
+            const cancelados = [];
+            let creditoDevolvido = 0;
+            let falha = null;
+            for (const a of analise) {
+                for (const g of a.grupos) {
+                    try {
+                        if (g.tipo === "pagamento") {
+                            const outras = (g.pay.reconciled_invoice_ids || []).filter(id => id !== a.fatura.id);
+                            if (outras.length > 0) throw new Error("ele também está ligado a outra fatura. Reverta pelo Odoo.");
+                            if (g.pay.state !== "draft") await execute("account.payment", "action_draft", [[g.pay.id]]);
+                            await execute("account.payment", "action_cancel", [[g.pay.id]]);
+                            cancelados.push({ nome: g.pay.name, valor: g.valor, conta: Array.isArray(g.pay.journal_id) ? g.pay.journal_id[1] : "" });
+                        } else {
+                            // desfaz só a conciliação desta fatura: o valor volta a ser crédito do cliente
+                            await execute("account.partial.reconcile", "unlink", [g.parciais.map(pa => pa.id)]);
+                            creditoDevolvido = r2c(creditoDevolvido + g.valor);
+                        }
+                    } catch (e) {
+                        falha = (g.tipo === "pagamento" ? "Não foi possível cancelar o pagamento " + (g.pay.name || "") + ": "
+                                                        : "Não foi possível devolver o crédito ao cliente: ") + e.message;
+                        break;
+                    }
+                }
+                if (!falha) {
+                    // fatura sem nenhum pagamento volta a ser provisória (só é lançada quando for paga de novo)
+                    try {
+                        const fx = await execute("account.move", "read", [[a.fatura.id]], { fields: ["amount_total", "amount_residual", "state"] });
+                        if (fx && fx[0] && fx[0].state === "posted" && r2c(fx[0].amount_residual) >= r2c(fx[0].amount_total) - 0.004) {
+                            await execute("account.move", "button_draft", [[a.fatura.id]]);
+                        }
+                    } catch (e) { /* melhor esforço: fica lançada e sem pagamento */ }
+                }
+                // destrava pedido e entrega conforme o novo estado de pagamento (mesmo se algo falhou no meio)
+                try { await sincronizarBloqueioEntregas(a.fatura.id); } catch (e) { /* melhor esforço */ }
+                if (falha) break;
+            }
+
+            if (falha) {
+                return res.status(500).json({ error: falha, cancelados, credito_devolvido: creditoDevolvido, parcial: cancelados.length > 0 || creditoDevolvido > 0 });
+            }
+            return res.status(200).json({ success: true, cancelados, credito_devolvido: creditoDevolvido });
+        }
+
         // AÇÃO: REABRIR PEDIDO CANCELADO/CONFIRMADO COMO ORÇAMENTO (EDITÁVEL)
         if (action === "reopen_sale_order") {
             const { order_id } = body;
@@ -1971,7 +2099,7 @@ export default async function handler(req, res) {
                 }),
                 execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], {
                     fields: ["id", "product_id", "product_uom_qty", "price_unit", "discount", "price_subtotal"]
-                }).catch(() => []),
+                }),
                 lookups.paymentTerms().catch(() => []),
                 lookups.saleProducts().catch(() => []),
                 lookups.warehouses().catch(() => [])
@@ -1979,11 +2107,19 @@ export default async function handler(req, res) {
             if (!orders || orders.length === 0) return res.status(404).json({ error: "Pedido de venda não encontrado." });
 
             const order = orders[0];
+            // Falhas NÃO são engolidas: antes, um erro momentâneo nos itens virava lista vazia e a venda abria sem itens.
+            let linhasPedido = lines || [];
+            if (linhasPedido.length === 0 && Array.isArray(order.order_line) && order.order_line.length > 0) {
+                linhasPedido = (await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], {
+                    fields: ["id", "product_id", "product_uom_qty", "price_unit", "discount", "price_subtotal"]
+                })) || [];
+                if (linhasPedido.length === 0) return res.status(502).json({ error: "Não consegui carregar os itens da venda. Tente abrir novamente." });
+            }
             const invoices = (order.invoice_ids && order.invoice_ids.length > 0)
-                ? await execute("account.move", "search_read", [[["id", "in", order.invoice_ids]]], { fields: ["id", "name", "state", "payment_state", "amount_total", "amount_residual", "invoice_date_due"] }).catch(() => [])
+                ? await execute("account.move", "search_read", [[["id", "in", order.invoice_ids]]], { fields: ["id", "name", "state", "payment_state", "amount_total", "amount_residual", "invoice_date_due"] })
                 : [];
 
-            return res.status(200).json({ order, lines: lines || [], payment_terms: paymentTerms || [], products: products || [], warehouses: warehouses || [], invoices: invoices || [] });
+            return res.status(200).json({ order, lines: linhasPedido, payment_terms: paymentTerms || [], products: products || [], warehouses: warehouses || [], invoices: invoices || [] });
         }
 
         // AÇÃO: BUSCAR LOCAIS DE ESTOQUE INTERNOS (PARA TRANSFERÊNCIAS)
