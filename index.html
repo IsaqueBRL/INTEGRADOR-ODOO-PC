@@ -1117,13 +1117,21 @@
                 const ctrl = new AbortController();
                 controllers.set(action, ctrl);
                 loadStart(action);
-                return fetchRobusto(url, { ...opts, signal: ctrl.signal }, action)
-                    .catch(err => {
+                // o spinner é encerrado AQUI, antes de devolver a promessa "eterna" da busca cancelada
+                // (antes o finally ficava depois dela e nunca rodava, travando a tela com "Carregando...")
+                return fetchRobusto(url, { ...opts, signal: ctrl.signal }, action).then(
+                    r => {
+                        if (controllers.get(action) === ctrl) controllers.delete(action);
+                        loadEnd(action);
+                        return r;
+                    },
+                    err => {
+                        if (controllers.get(action) === ctrl) controllers.delete(action);
+                        loadEnd(action);
                         // busca substituída por uma mais nova: a tela será atualizada pela busca nova
                         if (err && err.name === 'AbortError') return new Promise(() => {});
                         throw err;
-                    })
-                    .finally(() => { if (controllers.get(action) === ctrl) controllers.delete(action); loadEnd(action); });
+                    });
             }
 
             // qualquer ação que grava algo invalida as listas guardadas (antes só 'update_product' fazia isso)
@@ -1408,7 +1416,7 @@
 
     function labelProduto(p) {
         const q = p.stock_qty;
-        return (q === undefined || q === null) ? p.display_name : `${p.display_name} (${Number(q)} un)`;
+        return escHtml((q === undefined || q === null) ? p.display_name : `${p.display_name} (${Number(q)} un)`);
     }
 
     // Traz só os produtos que têm estoque no armazém escolhido
@@ -1452,7 +1460,7 @@
             let opts = '<option value="">Selecione um produto...</option>' +
                 availableProducts.map(p => `<option value="${p.id}">${labelProduto(p)}</option>`).join('');
             if (cur && !availableProducts.some(p => String(p.id) === cur)) {
-                opts += `<option value="${cur}">${curText} ⚠ sem estoque neste local</option>`;
+                opts += `<option value="${cur}">${escHtml(curText)} ⚠ sem estoque neste local</option>`;
                 semEstoque++;
             }
             sel.innerHTML = opts;
@@ -1590,7 +1598,7 @@
 
             const atual = select.value;
             select.innerHTML = '<option value="">Selecione uma categoria...</option><option value="all">Todas as categorias</option>' +
-                data.result.map(c => `<option value="${c.id}">${c.name} (${c.count})</option>`).join('');
+                data.result.map(c => `<option value="${c.id}">${escHtml(c.name)} (${c.count})</option>`).join('');
             if (atual && (atual === 'all' || data.result.some(c => String(c.id) === atual))) select.value = atual;
         } catch (e) { /* o filtro simplesmente fica só com "Todas as categorias" */ }
     }
@@ -1606,6 +1614,12 @@
     }
 
     let produtosReqId = 0;
+    const produtosPorId = {}; // produtos da lista atual (o botão Editar lê daqui, sem passar o nome pelo HTML)
+    function editarProdutoDaLista(id) {
+        const p = produtosPorId[id];
+        if (!p) return;
+        abrirModalEditProduto(p.id, p.name || '', p.list_price ?? 0, p.standard_price ?? 0, Array.isArray(p.categ_id) ? p.categ_id[0] : 0);
+    }
 
     /* 1. BUSCAR PRODUTOS (só busca no Odoo quando há categoria escolhida e/ou descrição digitada) */
     async function buscarProdutos() {
@@ -1649,17 +1663,17 @@
                 const cost = prod.standard_price ?? 0;
                 const qty = prod.qty_available ?? 0;
                 const qtyClass = qty > 0 ? "stock-in" : "stock-out";
-                const safeName = (prod.name || '').replace(/'/g, "\\'");
+                produtosPorId[prod.id] = prod;
 
                 html += `
                     <tr>
-                        <td><strong>${prod.name || '-'}</strong></td>
-                        <td><span class="category-badge">${category}</span></td>
+                        <td><strong>${escHtml(prod.name || '-')}</strong></td>
+                        <td><span class="category-badge">${escHtml(category)}</span></td>
                         <td class="price-col">R$ ${price.toFixed(2)}</td>
                         <td class="cost-col">R$ ${cost.toFixed(2)}</td>
                         <td><span class="stock-badge ${qtyClass}">${qty} un</span></td>
                         <td style="text-align: center;">
-                            <button class="btn-edit" onclick="abrirModalEditProduto(${prod.id}, '${safeName}', ${price}, ${cost}, ${Array.isArray(prod.categ_id) ? prod.categ_id[0] : 0})">Editar</button>
+                            <button class="btn-edit" onclick="editarProdutoDaLista(${prod.id})">Editar</button>
                         </td>
                     </tr>
                 `;
@@ -1686,7 +1700,7 @@
                 if (!data.result) throw new Error('sem categorias');
                 todasCategoriasProduto = data.result;
             }
-            select.innerHTML = todasCategoriasProduto.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+            select.innerHTML = todasCategoriasProduto.map(c => `<option value="${c.id}">${escHtml(c.name)}</option>`).join('');
             if (categIdAtual) select.value = String(categIdAtual);
         } catch (e) {
             select.innerHTML = '<option value="">Erro ao carregar categorias</option>';
@@ -1769,7 +1783,7 @@
                 const select = document.getElementById(cfg.id);
                 const atual = select.value;
                 select.innerHTML = `<option value="">${cfg.placeholder}</option><option value="all">${cfg.todos}</option>` +
-                    data.result.map(l => `<option value="${l.id}">${rotulo(l)}</option>`).join('');
+                    data.result.map(l => `<option value="${l.id}">${escHtml(rotulo(l))}</option>`).join('');
                 if (atual && (atual === 'all' || data.result.some(l => String(l.id) === atual))) select.value = atual;
             });
         } catch (e) { /* os filtros ficam só com as opções padrão */ }
@@ -1793,9 +1807,11 @@
     let ajusteBuscaTimer = null;
     let ajusteBuscaReq = 0;
 
-    function escAjuste(t) {
+    // escapa texto vindo do Odoo antes de colocar em innerHTML (nomes com aspas, & ou < não quebram mais a tela)
+    function escHtml(t) {
         return String(t ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     }
+    const escAjuste = escHtml;
 
     async function abrirModalAjusteEstoque() {
         ajusteItens = [];
@@ -1837,7 +1853,7 @@
                 const lista = data.result || [];
                 dd.innerHTML = lista.length === 0
                     ? '<div class="partner-dropdown-item" style="color:#888; cursor:default;">Nenhum produto encontrado</div>'
-                    : lista.map(p => `<div class="partner-dropdown-item" onclick="adicionarItemAjuste(${p.id}, '${escAjuste(p.display_name).replace(/'/g, '&#39;')}')">${escAjuste(p.display_name)}</div>`).join('');
+                    : lista.map(p => `<div class="partner-dropdown-item" data-id="${p.id}" data-name="${escHtml(p.display_name)}" onclick="adicionarItemAjuste(Number(this.dataset.id), this.dataset.name)">${escHtml(p.display_name)}</div>`).join('');
                 dd.style.display = 'block';
             } catch (e) { /* mantém a lista anterior */ }
         }, 250);
@@ -1968,9 +1984,9 @@
 
                 html += `
                     <tr>
-                        <td>${locationName}</td>
-                        <td><strong>${productName}</strong></td>
-                        <td>${categoria}</td>
+                        <td>${escHtml(locationName)}</td>
+                        <td><strong>${escHtml(productName)}</strong></td>
+                        <td>${escHtml(categoria)}</td>
                         <td>${moeda(item.standard_price)}</td>
                         <td>${moeda(item.lst_price)}</td>
                         <td><span class="stock-badge stock-in">${qty} un</span></td>
@@ -2250,10 +2266,10 @@
 
                 html += `
                     <tr style="cursor: pointer;" onclick="abrirDetalhesVenda(${sale.id})">
-                        <td>${warehouseName}</td>
+                        <td>${escHtml(warehouseName)}</td>
                         <td data-sort="${dataParaOrdenar(sale.date_order)}">${formatarSoData(sale.date_order)}</td>
-                        <td><strong style="color: var(--primary-color); text-decoration: underline;">${orderNum}</strong></td>
-                        <td>${clientName}</td>
+                        <td><strong style="color: var(--primary-color); text-decoration: underline;">${escHtml(orderNum)}</strong></td>
+                        <td>${escHtml(clientName)}</td>
                         <td><span class="status-badge ${stMeta.cls}">${stMeta.label}</span></td>
                         <td data-sort="${sale.due_date || ''}">${sale.due_date ? formatarDataISO(sale.due_date) : '-'}</td>
                         <td data-sort="${dias.sort}"><span class="${dias.cls}">${dias.texto}</span></td>
@@ -2323,7 +2339,6 @@
                 fecharModalAjusteSaldo();
                 alert('Ajuste de saldo lançado' + (data.name ? ' (' + data.name + ')' : '') + '!');
                 buscarFinanceiro();
-                carregarExtratoFinanceiro();
             } else {
                 alert(data.error || 'Erro ao lançar o ajuste.');
             }
@@ -2361,7 +2376,7 @@
             if (!data.journal) return alert('Diário "Transferências" não encontrado no Odoo.');
 
             document.getElementById('acctTrfJournal').value = data.journal.name;
-            const opcoes = data.accounts.map(a => `<option value="${a.id}">${a.code ? a.code + ' ' : ''}${a.name}</option>`).join('');
+            const opcoes = data.accounts.map(a => `<option value="${a.id}">${escHtml((a.code ? a.code + ' ' : '') + a.name)}</option>`).join('');
             selFrom.innerHTML = '<option value="">Selecione a conta de origem...</option>' + opcoes;
             selTo.innerHTML = '<option value="">Selecione a conta de destino...</option>' + opcoes;
             document.getElementById('accountTransferModal').style.display = 'flex';
@@ -2398,7 +2413,6 @@
                 alert(`Transferência ${data.name || ''} lançada com sucesso!`.replace('  ', ' '));
                 fecharModalTransferenciaContas();
                 buscarFinanceiro();
-                carregarExtratoFinanceiro();
             } else {
                 alert(data.error || 'Erro ao lançar a transferência.');
             }
@@ -2591,7 +2605,7 @@
 
                 html += `
                     <tr>
-                        <td><strong>${acc.name}</strong></td>
+                        <td><strong>${escHtml(acc.name)}</strong></td>
                         <td style="text-align: right; font-weight: bold; ${balanceClass}">
                             R$ ${balance.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </td>
@@ -2665,7 +2679,7 @@
             const selectWh = document.getElementById('saleWarehouse');
             selectWh.innerHTML = '';
             availableWarehouses.forEach((w, idx) => {
-                selectWh.innerHTML += `<option value="${w.id}" ${idx === 0 ? 'selected' : ''}>${w.name}</option>`;
+                selectWh.innerHTML += `<option value="${w.id}" ${idx === 0 ? 'selected' : ''}>${escHtml(w.name)}</option>`;
             });
             selectWh.disabled = false;
             await carregarProdutosDoArmazem();
@@ -2751,7 +2765,7 @@
             const currentWhId = Array.isArray(order.warehouse_id) ? order.warehouse_id[0] : order.warehouse_id;
             availableWarehouses.forEach(w => {
                 const selected = w.id === currentWhId ? 'selected' : '';
-                selectWh.innerHTML += `<option value="${w.id}" ${selected}>${w.name}</option>`;
+                selectWh.innerHTML += `<option value="${w.id}" ${selected}>${escHtml(w.name)}</option>`;
             });
 
             document.getElementById('saleCustomerInput').disabled = !isCurrentInvoiceEditable;
@@ -2965,8 +2979,8 @@
         const js = availableJournals || [];
         if (!js.length) return '<option value="">Nenhuma conta disponível</option>';
         return js.map(j => j.has_journal === false
-            ? `<option value="" disabled>${j.name} (sem diário no Odoo)</option>`
-            : `<option value="${j.id}" ${String(j.id) === String(sel) ? 'selected' : ''}>${j.name}</option>`).join('');
+            ? `<option value="" disabled>${escHtml(j.name)} (sem diário no Odoo)</option>`
+            : `<option value="${j.id}" ${String(j.id) === String(sel) ? 'selected' : ''}>${escHtml(j.name)}</option>`).join('');
     }
     function pgCredUsar() {
         if (!document.getElementById('pgCredChk').checked) return 0;
@@ -3116,7 +3130,7 @@
                 let contentHtml = '';
 
                 if (isDraft) {
-                    let journalOptions = journals.filter(j => j.has_journal !== false).map(j => `<option value="${j.id}" ${j.id === currentJournalId ? 'selected' : ''}>${j.name}</option>`).join('');
+                    let journalOptions = journals.filter(j => j.has_journal !== false).map(j => `<option value="${j.id}" ${j.id === currentJournalId ? 'selected' : ''}>${escHtml(j.name)}</option>`).join('');
                     if (currentJournalId && !journals.some(j => j.id === currentJournalId)) {
                         journalOptions = `<option value="${currentJournalId}" selected>${journalName}</option>` + journalOptions;
                     }
@@ -3340,16 +3354,17 @@
                 });
                 const data = await res.json();
                 
+                // nomes vão em data-* (escapados) e são lidos de volta pelo clique: aspas e apóstrofos não quebram mais
                 let ddHtml = `
-                    <div class="partner-dropdown-item partner-create-item" onclick="abrirModalCriarParceiro('${query.trim()}')">
-                        + Criar e Editar "${query.trim()}"...
+                    <div class="partner-dropdown-item partner-create-item" data-name="${escHtml(query.trim())}" onclick="abrirModalCriarParceiro(this.dataset.name)">
+                        + Criar e Editar "${escHtml(query.trim())}"...
                     </div>
                 `;
 
                 (data.partners || []).forEach(p => {
                     ddHtml += `
-                        <div class="partner-dropdown-item" onclick="selecionarParceiro(${p.id}, '${p.name.replace(/'/g, "\\'")}')">
-                            ${p.name}
+                        <div class="partner-dropdown-item" data-id="${p.id}" data-name="${escHtml(p.name)}" onclick="selecionarParceiro(Number(this.dataset.id), this.dataset.name)">
+                            ${escHtml(p.name)}
                         </div>
                     `;
                 });
@@ -3416,10 +3431,13 @@
     }
 
     document.addEventListener('click', function(e) {
-        const container = document.querySelector('.partner-search-container');
-        if (container && !container.contains(e.target)) {
-            document.getElementById('partnerDropdown').style.display = 'none';
-        }
+        // havia mais de um ".partner-search-container" (venda e ajuste de estoque): fecha cada lista se o clique foi fora do seu campo
+        document.querySelectorAll('.partner-search-container').forEach(container => {
+            if (!container.contains(e.target)) {
+                const dd = container.querySelector('.partner-dropdown');
+                if (dd) dd.style.display = 'none';
+            }
+        });
     });
 
     function renderLines(lines, editavel, qtdEditavel) {
@@ -3437,7 +3455,7 @@
             // garante que o produto já lançado na linha sempre apareça selecionado,
             // mesmo que ele não esteja (ou ainda não tenha carregado) na lista geral de produtos
             if (prodId && !availableProducts.some(p => p.id === prodId)) {
-                options = `<option value="${prodId}" selected>${prodName}</option>` + options;
+                options = `<option value="${prodId}" selected>${escHtml(prodName)}</option>` + options;
             }
 
             // desconto sempre mostrado em R$ (o Odoo guarda em %)
@@ -4053,7 +4071,7 @@
             tr.setAttribute('data-price-unit', l.price_unit);
             tr.setAttribute('data-qty', l.quantity);
             tr.innerHTML = `
-                <td>${productName}</td>
+                <td>${escHtml(productName)}</td>
                 <td>${l.quantity}</td>
                 <td><input type="number" class="invoice-line-discount" value="${l.discount || 0}" min="0" max="100" step="0.01" oninput="recalcularTotalFatura()" ${editable ? '' : 'disabled'} style="width: 80px;"></td>
                 <td class="invoice-line-total">R$ ${(l.price_subtotal ?? 0).toFixed(2)}</td>
@@ -4299,7 +4317,7 @@
         let opts = '<option value="">Selecione um produto...</option>' +
             availableTransferProducts.map(p => `<option value="${p.id}">${labelProduto(p)}</option>`).join('');
         if (selecionadoId && !availableTransferProducts.some(p => String(p.id) === String(selecionadoId))) {
-            opts += `<option value="${selecionadoId}">${selecionadoNome || ('Produto ' + selecionadoId)}${avisarSemEstoque ? ' ⚠ sem estoque neste local' : ''}</option>`;
+            opts += `<option value="${selecionadoId}">${escHtml(selecionadoNome || ('Produto ' + selecionadoId))}${avisarSemEstoque ? ' ⚠ sem estoque neste local' : ''}</option>`;
         }
         return opts;
     }
@@ -4402,9 +4420,9 @@
                 html += `
                     <tr style="cursor: pointer;" onclick="abrirDetalhesTransferencia(${t.id})">
                         <td data-sort="${dataParaOrdenar(t.date_done)}">${formatarDataEfetiva(t.date_done)}</td>
-                        <td><strong style="color: var(--primary-color); text-decoration: underline;">${t.name}</strong></td>
-                        <td>${de}</td>
-                        <td>${para}</td>
+                        <td><strong style="color: var(--primary-color); text-decoration: underline;">${escHtml(t.name)}</strong></td>
+                        <td>${escHtml(de)}</td>
+                        <td>${escHtml(para)}</td>
                         <td><span class="status-badge ${meta.cls}">${meta.label}</span></td>
                     </tr>
                 `;
@@ -4475,7 +4493,7 @@
             const destId = Array.isArray(picking.location_dest_id) ? picking.location_dest_id[0] : picking.location_dest_id;
 
             const locOptions = availableLocations.map(l =>
-                `<option value="${l.id}">${l.complete_name}</option>`
+                `<option value="${l.id}">${escHtml(l.complete_name)}</option>`
             ).join('');
 
             const selectSrc = document.getElementById('transferLocationSrc');
@@ -4662,6 +4680,34 @@
     function fecharTransferModal() {
         document.getElementById('transferModal').style.display = 'none';
     }
+
+    /* ------------------------------------------------------------
+       ANTI CLIQUE DUPLO: enquanto uma gravação está em andamento, o mesmo botão (ou outro do mesmo grupo)
+       é ignorado. Evita pedido/pagamento/transferência duplicados (o spinner só aparece após 150 ms).
+       ------------------------------------------------------------ */
+    (function () {
+        const grupos = {
+            pedido: ['salvarOrcamento', 'confirmarELancarPedido', 'salvarAlteracoesPedido', 'gerarFaturaPedido', 'cancelarPedido', 'excluirPedido', 'reabrirComoOrcamento'],
+            transferencia: ['validarTransferencia', 'excluirTransferencia', 'criarNovaTransferencia'],
+            pagamento: ['confirmarPagamentoOdoo', 'salvarELancarPagamentoProvisorio', 'voltarPagamentoProvisorio', 'excluirPagamentoProvisorio'],
+            estoque: ['salvarAjusteEstoque'],
+            financeiro: ['salvarAjusteSaldo', 'lancarTransferenciaContas'],
+            credito: ['salvarCredito']
+        };
+        Object.keys(grupos).forEach(chave => {
+            let rodando = false;
+            grupos[chave].forEach(nome => {
+                const original = window[nome];
+                if (typeof original !== 'function') return;
+                window[nome] = async function () {
+                    if (rodando) return;
+                    rodando = true;
+                    try { return await original.apply(this, arguments); }
+                    finally { rodando = false; }
+                };
+            });
+        });
+    })();
 
 </script>
 
