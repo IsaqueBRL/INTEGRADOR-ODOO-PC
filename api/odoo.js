@@ -314,6 +314,11 @@ export default async function handler(req, res) {
                 const metodo = vr.res_model === "stock.backorder.confirmation" ? "process_cancel_backorder" : "process";
                 await execute(vr.res_model, metodo, [[wid]], { context: wctx });
             }
+            // confere se a entrega realmente concluiu (o Odoo pode abrir uma janela e não concluir, ex.: falta de estoque)
+            const chk = await execute("stock.picking", "read", [[Number(pickingId)]], { fields: ["name", "state"] });
+            if (!chk || !chk[0] || chk[0].state !== "done") {
+                throw new Error("a operação " + ((chk && chk[0] && chk[0].name) || "#" + pickingId) + " não foi concluída (situação: " + ((chk && chk[0] && chk[0].state) || "desconhecida") + "). Confira o estoque disponível.");
+            }
         };
 
         // Mantém UMA ÚNICA entrega por pedido, sempre igual às linhas do pedido (produto e quantidade).
@@ -1455,9 +1460,9 @@ export default async function handler(req, res) {
                                     await execute("stock.move", "write", [[mv.id], { quantity_done: mv.product_uom_qty }]).catch(() => {});
                                 }
                             }
-                            await execute("stock.picking", "button_validate", [[p.id]]);
+                            await validarPickingComAssistentes(p.id);
                         } catch (e) {
-                            warnings.push("Pedido confirmado, mas a entrega #" + p.id + " não pôde ser concluída automaticamente. Finalize-a no Odoo para baixar o estoque.");
+                            warnings.push("Pedido confirmado, mas a entrega #" + p.id + " não pôde ser concluída automaticamente (" + e.message + "). Finalize-a no Odoo para baixar o estoque.");
                         }
                     }
                 } catch (e) {
@@ -2404,7 +2409,18 @@ export default async function handler(req, res) {
             }
 
             if (validate) {
-                await execute("stock.picking", "button_validate", [[Number(order_id)]]);
+                const atual = await execute("stock.picking", "read", [[Number(order_id)]], { fields: ["location_id", "location_dest_id"] });
+                const o = atual && atual[0] && Array.isArray(atual[0].location_id) ? atual[0].location_id[0] : null;
+                const d = atual && atual[0] && Array.isArray(atual[0].location_dest_id) ? atual[0].location_dest_id[0] : null;
+                if (!o || !d) return res.status(400).json({ error: "Escolha o local de origem e o de destino antes de validar." });
+                if (o === d) return res.status(400).json({ error: "O local de origem e o de destino devem ser diferentes." });
+                const mvs = await execute("stock.move", "search_read", [[["picking_id", "=", Number(order_id)]]], { fields: ["id"] });
+                if (!mvs || mvs.length === 0) return res.status(400).json({ error: "Adicione ao menos um item à transferência antes de validar." });
+                try {
+                    await validarPickingComAssistentes(order_id);
+                } catch (e) {
+                    return res.status(400).json({ error: "Não foi possível validar a transferência: " + e.message });
+                }
             }
 
             return res.status(200).json({ success: true });
