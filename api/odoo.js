@@ -1,12 +1,12 @@
 // =====================================================================
 // CONEXÃO COM O ODOO (nível de módulo: sobrevive entre requisições "quentes")
 // =====================================================================
-// As credenciais agora vêm das variáveis de ambiente da Vercel (ODOO_URL, ODOO_DB, ODOO_USER, ODOO_API_KEY).
-// Os valores antigos continuam como reserva para o site não parar, mas o ideal é removê-los daqui.
-const ODOO_URL = process.env.ODOO_URL || "https://deuris-candy-2.odoo.com/jsonrpc";
-const ODOO_DB = process.env.ODOO_DB || "deuris-candy-2";
-const ODOO_USER = process.env.ODOO_USER || "isaquemoises14@gmail.com";
-const ODOO_API_KEY = process.env.ODOO_API_KEY || "0757a6c247886172bff32acdceb0122735bb3278";
+// As credenciais vêm SOMENTE das variáveis de ambiente da Vercel (ODOO_URL, ODOO_DB, ODOO_USER, ODOO_API_KEY).
+// Nunca escreva usuário, senha ou chave de API neste arquivo.
+const ODOO_URL = process.env.ODOO_URL;
+const ODOO_DB = process.env.ODOO_DB;
+const ODOO_USER = process.env.ODOO_USER;
+const ODOO_API_KEY = process.env.ODOO_API_KEY;
 
 let cachedUid = null;
 let uidPromise = null;
@@ -161,6 +161,12 @@ export default async function handler(req, res) {
 
     if (req.method === 'OPTIONS') {
         return res.status(200).end();
+    }
+
+    // Falta alguma credencial na Vercel: avisa com clareza em vez de falhar de forma misteriosa
+    const faltando = ['ODOO_URL', 'ODOO_DB', 'ODOO_USER', 'ODOO_API_KEY'].filter(k => !process.env[k]);
+    if (faltando.length > 0) {
+        return res.status(500).json({ error: 'Configuração incompleta no servidor: falta(m) a(s) variável(is) de ambiente ' + faltando.join(', ') + ' na Vercel.' });
     }
 
     let body;
