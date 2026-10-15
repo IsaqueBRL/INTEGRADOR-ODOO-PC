@@ -387,6 +387,7 @@
             <button class="btn-menu" onclick="abrirTelaVendas();">VENDAS</button>
             <button class="btn-menu" onclick="mostrarTela('financeiroSection'); pesquisar('financeiro', buscarFinanceiro);">FINANCEIRO</button>
             <button class="btn-menu" onclick="abrirTelaTransferencias();">TRANSFERÊNCIAS</button>
+            <button class="btn-menu" onclick="abrirTelaQrCodes();">QR CODES</button>
         </div>
 
         <div id="installCard">
@@ -398,6 +399,22 @@
             </div>
             <div id="installDica">Se o navegador não abrir a instalação, use o ícone de instalar na barra de endereço (à direita) ou abra o menu <b>&#8942;</b> e escolha <b>Salvar e compartilhar &rarr; Instalar página como app</b> (no Edge: <b>Aplicativos &rarr; Instalar este site como um aplicativo</b>).</div>
         </div>
+    </div>
+
+    <!-- TELA DE QR CODES (autoatendimento) -->
+    <div id="qrSection" class="view-section">
+        <div class="top-nav">
+            <button class="btn-back" onclick="mostrarTela('homeSection')">← Voltar</button>
+            <h2>QR Codes do Autoatendimento</h2>
+        </div>
+        <div class="search-box" style="flex-wrap:wrap;">
+            <input type="text" id="qrUrlInput" placeholder="Endereço do site. Ex.: https://deuris-autoatendimento.vercel.app" style="min-width:280px;">
+            <input type="text" id="qrPixInput" placeholder="Chave Pix (CPF, e-mail, telefone ou chave aleatória)" maxlength="140" style="min-width:260px;">
+            <button onclick="qrSalvar()">Salvar</button>
+            <button onclick="qrImprimirTodos()">Imprimir todos</button>
+        </div>
+        <div id="qrStatus" class="status">Carregando locais...</div>
+        <div id="qrGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;"></div>
     </div>
 
     <!-- TELA DE PRODUTOS -->
@@ -1504,6 +1521,7 @@
         document.getElementById('vendasSection').style.display = 'none';
         document.getElementById('financeiroSection').style.display = 'none';
         document.getElementById('transferenciasSection').style.display = 'none';
+        document.getElementById('qrSection').style.display = 'none';
 
         const telaTarget = document.getElementById(idTela);
         telaTarget.style.display = idTela === 'homeSection' ? 'flex' : 'block';
@@ -4709,6 +4727,276 @@
         });
     })();
 
+</script>
+
+<script>
+/* ===== QR CODES DO AUTOATENDIMENTO ===== */
+/* Gerador de QR Code (modo bytes, correção de erro M, versões 1 a 10 = até 213 caracteres).
+   gerarQr("texto") devolve uma matriz de true (escuro) / false (claro). */
+function gerarQr(texto) {
+    var bytes = Array.prototype.slice.call(new TextEncoder().encode(String(texto)));
+    // versão: [total de palavras de dados, ecc por bloco, blocos curtos, blocos longos]
+    var VERSOES = [null,
+        [16, 10, 1, 0], [28, 16, 1, 0], [44, 26, 1, 0], [64, 18, 2, 0], [86, 24, 2, 0],
+        [108, 16, 4, 0], [124, 18, 4, 0], [154, 22, 2, 2], [182, 22, 3, 2], [216, 26, 4, 1]];
+    var ALINHA = [null, [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50]];
+
+    var v, info;
+    for (v = 1; v <= 10; v++) {
+        info = VERSOES[v];
+        var bitsCont = v < 10 ? 8 : 16;
+        if (4 + bitsCont + bytes.length * 8 <= info[0] * 8) break;
+    }
+    if (v > 10) throw new Error("Texto grande demais para o QR Code");
+    var totalDados = info[0], eccPorBloco = info[1];
+    var nCurtos = info[2], nLongos = info[3], nBlocos = nCurtos + nLongos;
+
+    // ---- bits de dados ----
+    var bits = [];
+    function pus(valor, n) { for (var i = n - 1; i >= 0; i--) bits.push((valor >>> i) & 1); }
+    pus(4, 4); pus(bytes.length, v < 10 ? 8 : 16);
+    bytes.forEach(function (b) { pus(b, 8); });
+    pus(0, Math.min(4, totalDados * 8 - bits.length));
+    while (bits.length % 8) bits.push(0);
+    var dados = [];
+    for (var i = 0; i < bits.length; i += 8) { var b = 0; for (var j = 0; j < 8; j++) b = (b << 1) | bits[i + j]; dados.push(b); }
+    for (var pad = 0xEC; dados.length < totalDados; pad ^= 0xEC ^ 0x11) dados.push(pad);
+
+    // ---- Reed-Solomon ----
+    var EXP = new Array(512), LOG = new Array(256), x = 1;
+    for (i = 0; i < 255; i++) { EXP[i] = x; LOG[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11d; }
+    for (i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
+    function mul(a, b) { return a && b ? EXP[LOG[a] + LOG[b]] : 0; }
+    var gerador = [1];
+    for (i = 0; i < eccPorBloco; i++) {
+        var prox = new Array(gerador.length + 1).fill(0);
+        for (j = 0; j < gerador.length; j++) { prox[j] ^= gerador[j]; prox[j + 1] ^= mul(gerador[j], EXP[i]); }
+        gerador = prox;
+    }
+    function ecc(bloco) {
+        var r = new Array(eccPorBloco).fill(0);
+        bloco.forEach(function (d) {
+            var f = d ^ r.shift(); r.push(0);
+            for (var k = 0; k < eccPorBloco; k++) r[k] ^= mul(gerador[k + 1], f);
+        });
+        return r;
+    }
+    var blocos = [], eccs = [], pos = 0;
+    var tamCurto = Math.floor(totalDados / nBlocos);
+    for (i = 0; i < nBlocos; i++) {
+        var tam = i < nCurtos ? tamCurto : tamCurto + 1;
+        var bl = dados.slice(pos, pos + tam); pos += tam;
+        blocos.push(bl); eccs.push(ecc(bl));
+    }
+    var final = [];
+    for (i = 0; i <= tamCurto; i++) blocos.forEach(function (bl) { if (i < bl.length) final.push(bl[i]); });
+    for (i = 0; i < eccPorBloco; i++) eccs.forEach(function (e) { final.push(e[i]); });
+
+    // ---- matriz ----
+    var n = 17 + 4 * v;
+    var m = [], fn = [];
+    for (i = 0; i < n; i++) { m.push(new Array(n).fill(false)); fn.push(new Array(n).fill(false)); }
+    function fixa(cx, cy, escuro) { if (cx >= 0 && cx < n && cy >= 0 && cy < n) { m[cy][cx] = escuro; fn[cy][cx] = true; } }
+    function bit(valor, k) { return ((valor >>> k) & 1) !== 0; }
+
+    for (i = 0; i < n; i++) { fixa(6, i, i % 2 === 0); fixa(i, 6, i % 2 === 0); }
+    function finder(cx, cy) {
+        for (var dy = -4; dy <= 4; dy++) for (var dx = -4; dx <= 4; dx++) {
+            var d = Math.max(Math.abs(dx), Math.abs(dy));
+            fixa(cx + dx, cy + dy, d !== 2 && d !== 4);
+        }
+    }
+    finder(3, 3); finder(n - 4, 3); finder(3, n - 4);
+    var ap = ALINHA[v];
+    for (i = 0; i < ap.length; i++) for (j = 0; j < ap.length; j++) {
+        if ((i === 0 && j === 0) || (i === 0 && j === ap.length - 1) || (i === ap.length - 1 && j === 0)) continue;
+        for (var dy = -2; dy <= 2; dy++) for (var dx = -2; dx <= 2; dx++) fixa(ap[i] + dx, ap[j] + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+    }
+    function formato(mascara) {
+        var d = (0 << 3) | mascara, r = d;               // nível M = 00
+        for (var k = 0; k < 10; k++) r = (r << 1) ^ ((r >>> 9) * 0x537);
+        var f = ((d << 10) | r) ^ 0x5412;
+        for (var k = 0; k <= 5; k++) fixa(8, k, bit(f, k));
+        fixa(8, 7, bit(f, 6)); fixa(8, 8, bit(f, 7)); fixa(7, 8, bit(f, 8));
+        for (k = 9; k < 15; k++) fixa(14 - k, 8, bit(f, k));
+        for (k = 0; k < 8; k++) fixa(n - 1 - k, 8, bit(f, k));
+        for (k = 8; k < 15; k++) fixa(8, n - 15 + k, bit(f, k));
+        fixa(8, n - 8, true);
+    }
+    formato(0);
+    if (v >= 7) {
+        var r = v;
+        for (i = 0; i < 12; i++) r = (r << 1) ^ ((r >>> 11) * 0x1F25);
+        var vb = (v << 12) | r;
+        for (i = 0; i < 18; i++) {
+            var a = n - 11 + (i % 3), b = Math.floor(i / 3);
+            fixa(a, b, bit(vb, i)); fixa(b, a, bit(vb, i));
+        }
+    }
+    // dados em zigue-zague
+    var k2 = 0;
+    for (var dir = n - 1; dir >= 1; dir -= 2) {
+        if (dir === 6) dir = 5;
+        for (var vert = 0; vert < n; vert++) for (j = 0; j < 2; j++) {
+            var cx = dir - j, subindo = ((dir + 1) & 2) === 0, cy = subindo ? n - 1 - vert : vert;
+            if (!fn[cy][cx] && k2 < final.length * 8) { m[cy][cx] = bit(final[k2 >>> 3], 7 - (k2 & 7)); k2++; }
+        }
+    }
+    // ---- máscara de menor penalidade ----
+    function inverter(mascara) {
+        for (var yy = 0; yy < n; yy++) for (var xx = 0; xx < n; xx++) {
+            if (fn[yy][xx]) continue;
+            var inv;
+            switch (mascara) {
+                case 0: inv = (xx + yy) % 2 === 0; break;
+                case 1: inv = yy % 2 === 0; break;
+                case 2: inv = xx % 3 === 0; break;
+                case 3: inv = (xx + yy) % 3 === 0; break;
+                case 4: inv = (Math.floor(xx / 3) + Math.floor(yy / 2)) % 2 === 0; break;
+                case 5: inv = (xx * yy) % 2 + (xx * yy) % 3 === 0; break;
+                case 6: inv = ((xx * yy) % 2 + (xx * yy) % 3) % 2 === 0; break;
+                default: inv = ((xx + yy) % 2 + (xx * yy) % 3) % 2 === 0;
+            }
+            if (inv) m[yy][xx] = !m[yy][xx];
+        }
+    }
+    function penalidade() {
+        var p = 0, escuros = 0, l, c, run, ant;
+        for (l = 0; l < n; l++) for (c = 0; c < n; c++) if (m[l][c]) escuros++;
+        for (var eixo = 0; eixo < 2; eixo++) for (l = 0; l < n; l++) {
+            run = 0; ant = null; var seq = [];
+            for (c = 0; c < n; c++) {
+                var cor = eixo ? m[c][l] : m[l][c];
+                seq.push(cor ? 1 : 0);
+                if (cor === ant) { run++; if (run === 5) p += 3; else if (run > 5) p++; } else { run = 1; ant = cor; }
+            }
+            var s = seq.join("");
+            for (var q = 0; q + 11 <= s.length; q++) { var w = s.substr(q, 11); if (w === "10111010000" || w === "00001011101") p += 40; }
+        }
+        for (l = 0; l < n - 1; l++) for (c = 0; c < n - 1; c++) if (m[l][c] === m[l][c + 1] && m[l][c] === m[l + 1][c] && m[l][c] === m[l + 1][c + 1]) p += 3;
+        p += (Math.ceil(Math.abs(escuros * 20 - n * n * 10) / (n * n)) - 1) * 10;
+        return p;
+    }
+    var melhor = 0, melhorP = Infinity;
+    for (var mk = 0; mk < 8; mk++) {
+        inverter(mk); formato(mk);
+        var pen = penalidade();
+        if (pen < melhorP) { melhorP = pen; melhor = mk; }
+        inverter(mk);
+    }
+    inverter(melhor); formato(melhor);
+    return m;
+}
+
+
+(function () {
+    var dados = { url: '', pix: '', locais: [] };
+    var URL_OK = /^https:\/\/[^\s/?#]+(\/[^\s?#]*)?$/i;
+
+    function status(t, erro) { var el = document.getElementById('qrStatus'); el.textContent = t || ''; el.style.color = erro ? '#c0392b' : ''; }
+    function linkDoLocal(l) { return dados.url.replace(/\/+$/, '') + '/?l=' + encodeURIComponent(l.token); }
+
+    function desenhar(l, tamanho) {
+        var m = gerarQr(linkDoLocal(l)), n = m.length, margem = 4;
+        var mod = Math.max(2, Math.floor(tamanho / (n + 2 * margem))), lado = (n + 2 * margem) * mod;
+        var c = document.createElement('canvas'), alturaTxt = Math.round(lado * 0.16);
+        c.width = lado; c.height = lado + alturaTxt;
+        var x = c.getContext('2d');
+        x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
+        x.fillStyle = '#000';
+        for (var y = 0; y < n; y++) for (var k = 0; k < n; k++) if (m[y][k]) x.fillRect((k + margem) * mod, (y + margem) * mod, mod, mod);
+        var fonte = Math.round(alturaTxt * 0.55);
+        x.font = '700 ' + fonte + 'px Arial, sans-serif';
+        x.textAlign = 'center'; x.textBaseline = 'middle';
+        while (x.measureText(l.name).width > lado - 16 && fonte > 8) { fonte -= 1; x.font = '700 ' + fonte + 'px Arial, sans-serif'; }
+        x.fillText(l.name, lado / 2, lado + alturaTxt / 2 - 4);
+        return c;
+    }
+
+    function nomeArquivo(l) { return 'qr-' + l.name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').toLowerCase() + '.png'; }
+
+    function mostrar() {
+        var grid = document.getElementById('qrGrid');
+        grid.textContent = '';
+        if (!dados.url) { status('Digite o endereço do site de autoatendimento e clique em "Salvar" para gerar os QR Codes.'); return; }
+        if (!dados.locais.length) { status('Nenhum local (armazém) encontrado no Odoo.'); return; }
+        status(dados.locais.length + ' local(is). Cada QR abre o site já travado no local, sem opção de trocar.' + (dados.pix ? '' : ' Atenção: a chave Pix ainda não foi definida.'));
+        dados.locais.forEach(function (l) {
+            var card = document.createElement('div');
+            card.style.cssText = 'background:#fff;border:1px solid var(--border-color);border-radius:12px;padding:14px;text-align:center;';
+            var cv = desenhar(l, 240); cv.style.cssText = 'width:100%;height:auto;max-width:240px;';
+            var tit = document.createElement('div'); tit.textContent = l.name; tit.style.cssText = 'font-weight:700;margin:8px 0;word-break:break-word;';
+            var bt = document.createElement('div'); bt.style.cssText = 'display:flex;gap:8px;justify-content:center;flex-wrap:wrap;';
+            var bc = document.createElement('button'); bc.className = 'btn-action'; bc.textContent = 'Copiar link';
+            bc.addEventListener('click', function () {
+                var link = linkDoLocal(l);
+                var ok = function () { bc.textContent = 'Copiado!'; setTimeout(function () { bc.textContent = 'Copiar link'; }, 1500); };
+                if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(link).then(ok, function () { prompt('Copie o link:', link); });
+                else prompt('Copie o link:', link);
+            });
+            var bd = document.createElement('button'); bd.className = 'btn-action'; bd.textContent = 'Baixar';
+            bd.addEventListener('click', function () {
+                var a = document.createElement('a'); a.href = desenhar(l, 1000).toDataURL('image/png'); a.download = nomeArquivo(l);
+                document.body.appendChild(a); a.click(); a.remove();
+            });
+            bt.appendChild(bc); bt.appendChild(bd);
+            card.appendChild(cv); card.appendChild(tit); card.appendChild(bt);
+            grid.appendChild(card);
+        });
+    }
+
+    window.abrirTelaQrCodes = async function () {
+        mostrarTela('qrSection');
+        status('Carregando locais...');
+        var localUrl = '', localPix = '';
+        try { localUrl = localStorage.getItem('qrUrl') || ''; localPix = localStorage.getItem('qrPix') || ''; } catch (e) {}
+        try {
+            var r = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'get_qr_links' }) });
+            var d = await r.json();
+            if (!r.ok || d.error) throw new Error(d.error || 'Erro ao carregar.');
+            dados.locais = d.locais || [];
+            dados.url = d.url || localUrl;
+            dados.pix = d.pix || localPix;
+        } catch (e) { dados.locais = []; status(e.message, true); document.getElementById('qrGrid').textContent = ''; return; }
+        document.getElementById('qrUrlInput').value = dados.url;
+        document.getElementById('qrPixInput').value = dados.pix;
+        mostrar();
+    };
+
+    window.qrSalvar = async function () {
+        var url = document.getElementById('qrUrlInput').value.trim().replace(/\/+$/, '');
+        var pix = document.getElementById('qrPixInput').value.trim();
+        if (url && !URL_OK.test(url)) { status('Endereço inválido. Use algo como https://meu-site.vercel.app', true); return; }
+        try { localStorage.setItem('qrUrl', url); localStorage.setItem('qrPix', pix); } catch (e) {}
+        var salvouNoOdoo = true;
+        try {
+            var r = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'save_qr_config', url: url, pix: pix }) });
+            var d = await r.json();
+            if (!r.ok || d.error) throw new Error(d.error);
+        } catch (e) { salvouNoOdoo = false; }
+        dados.url = url; dados.pix = pix;
+        mostrar();
+        if (!salvouNoOdoo) status('Salvo só neste computador: o Odoo não permitiu gravar. O site de autoatendimento só usa a chave Pix gravada no Odoo.', true);
+    };
+
+    window.qrImprimirTodos = function () {
+        if (!dados.url || !dados.locais.length) { status('Salve o endereço do site primeiro.', true); return; }
+        var w = window.open('', '_blank');
+        if (!w) { status('O navegador bloqueou a janela de impressão. Permita pop-ups e tente de novo.', true); return; }
+        var d = w.document;
+        d.title = 'QR Codes';
+        var st = d.createElement('style');
+        st.textContent = 'body{margin:0;font-family:Arial,sans-serif}.p{page-break-after:always;display:flex;align-items:center;justify-content:center;height:100vh}.p img{width:80vmin;height:auto}@page{margin:10mm}';
+        d.head.appendChild(st);
+        dados.locais.forEach(function (l) {
+            var p = d.createElement('div'); p.className = 'p';
+            var im = d.createElement('img'); im.src = desenhar(l, 1000).toDataURL('image/png');
+            p.appendChild(im); d.body.appendChild(p);
+        });
+        w.focus();
+        setTimeout(function () { w.print(); }, 400);
+    };
+})();
 </script>
 
 <script>
