@@ -8,6 +8,8 @@ const ODOO_DB = process.env.ODOO_DB;
 const ODOO_USER = process.env.ODOO_USER;
 const ODOO_API_KEY = process.env.ODOO_API_KEY;
 
+import crypto from "node:crypto";
+
 let cachedUid = null;
 let uidPromise = null;
 let forcedAccountIdCache = null;
@@ -1092,6 +1094,42 @@ export default async function handler(req, res) {
                 lookups.warehouses().catch(() => [])
             ]);
             return res.status(200).json({ payment_terms: paymentTerms || [], products: products || [], warehouses: warehouses || [] });
+        }
+
+        // AÇÃO: DADOS DOS QR CODES (um por armazém). O código de cada local é calculado aqui com a QR_SECRET;
+        // o navegador nunca recebe a senha, só os códigos prontos.
+        if (action === "get_qr_links") {
+            const segredo = process.env.QR_SECRET;
+            if (!segredo || segredo.length < 16) {
+                return res.status(400).json({ error: "QR_SECRET não está configurada neste projeto da Vercel (precisa ser a MESMA do site de autoatendimento)." });
+            }
+            const warehouses = await lookups.warehouses();
+            const locais = (warehouses || []).map(w => ({
+                id: w.id,
+                name: w.name,
+                token: crypto.createHmac("sha256", segredo).update("armazem:" + Number(w.id)).digest("base64url").slice(0, 16)
+            }));
+            const param = async chave => { try { return String((await execute("ir.config_parameter", "get_param", [chave])) || ""); } catch (e) { return ""; } };
+            return res.status(200).json({
+                url: await param("deuris.autoatendimento_url"),
+                pix: await param("deuris.autoatendimento_pix"),
+                locais
+            });
+        }
+
+        // AÇÃO: GUARDAR ENDEREÇO DO SITE E CHAVE PIX (ficam no Odoo e valem para todos os computadores e para o site)
+        if (action === "save_qr_config") {
+            const url = String(body.url || "").trim().replace(/\/+$/, "");
+            const pix = String(body.pix || "").trim();
+            if (url && !/^https:\/\/[^\s/?#]+(\/[^\s?#]*)?$/i.test(url)) {
+                return res.status(400).json({ error: "Endereço inválido. Use algo como https://meu-site.vercel.app" });
+            }
+            if (pix.length > 140 || /[\u0000-\u001f]/.test(pix)) {
+                return res.status(400).json({ error: "Chave Pix inválida." });
+            }
+            await execute("ir.config_parameter", "set_param", ["deuris.autoatendimento_url", url]);
+            await execute("ir.config_parameter", "set_param", ["deuris.autoatendimento_pix", pix]);
+            return res.status(200).json({ ok: true, url, pix });
         }
 
         // AÇÃO: BUSCAR ARMAZÉNS (LOCAIS DE ESTOQUE PARA VENDA)
