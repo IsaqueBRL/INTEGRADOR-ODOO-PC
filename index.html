@@ -516,8 +516,8 @@
         <div class="rep-periodos">
             <span class="lbl">Velocidade de venda calculada em:</span>
             <button type="button" class="btn-periodo" id="repPeriodo7" onclick="setReposicaoPeriodo(7)">7 dias</button>
-            <button type="button" class="btn-periodo active" id="repPeriodo14" onclick="setReposicaoPeriodo(14)">14 dias</button>
-            <button type="button" class="btn-periodo" id="repPeriodo30" onclick="setReposicaoPeriodo(30)">30 dias</button>
+            <button type="button" class="btn-periodo" id="repPeriodo14" onclick="setReposicaoPeriodo(14)">14 dias</button>
+            <button type="button" class="btn-periodo active" id="repPeriodo30" onclick="setReposicaoPeriodo(30)">30 dias</button>
             <select id="repCategoria" title="Filtrar por categoria" onchange="buscarReposicao()" style="margin-left:auto; padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:240px;cursor:pointer;">
                 <option value="">Todas as categorias</option>
             </select>
@@ -1971,7 +1971,7 @@
     }
 
     /* PREVISÃO DE REPOSIÇÃO (só produtos de venda): estoque atual ÷ média de venda diária = dias até zerar */
-    let reposicaoPeriodoDias = 14;
+    let reposicaoPeriodoDias = 30;
     let reposicaoReqId = 0;
 
     function abrirTelaReposicao() {
