@@ -463,10 +463,12 @@
 
         <div class="search-box">
             <input type="text" id="searchSuprimentosInput" placeholder="Digite o nome do produto...">
+            <input type="text" id="searchSuprimentosBarcode" placeholder="Código de barras..." style="max-width:220px;">
+            <input type="text" id="searchSuprimentosUnidade" placeholder="Unidade (ex.: g, Units)..." style="max-width:180px;">
             <button onclick="pesquisar('suprimentos', buscarSuprimentos)">Pesquisar</button>
         </div>
 
-        <div id="statusSuprimentos" class="status">Carregando suprimentos...</div>
+        <div id="statusSuprimentos" class="status">Use os filtros e clique em Pesquisar. Sem nenhum filtro, mostra todos os suprimentos.</div>
 
         <div class="table-container">
             <table>
@@ -1588,7 +1590,7 @@
        ------------------------------------------------------------ */
     const FILTROS_TELA = {
         produtos: ['searchInput', 'categoryFilter'],
-        suprimentos: ['searchSuprimentosInput'],
+        suprimentos: ['searchSuprimentosInput', 'searchSuprimentosBarcode', 'searchSuprimentosUnidade'],
         estoque: ['searchEstoqueInput', 'locationFilter'],
         vendas: ['searchVendasInput', 'vendasWarehouseFilter', 'vendasStatusFilter', 'vendasDataDe', 'vendasDataAte'],
         transferencias: ['searchTransferenciasInput', 'transferOrigemFilter', 'transferDestinoFilter', 'transferDataDe', 'transferDataAte'],
@@ -1845,14 +1847,23 @@
         return "R$ " + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
     }
 
+    // Abre a tela vazia: os dados só aparecem quando o usuário clica em Pesquisar
+    // (com filtros preenchidos = filtrado; sem nenhum filtro = traz todos)
     function abrirTelaSuprimentos() {
         mostrarTela('suprimentosSection');
-        document.getElementById('searchSuprimentosInput').value = '';
-        pesquisar('suprimentos', buscarSuprimentos);
+        ++suprimentosReqId; // descarta qualquer busca anterior ainda em andamento
+        ['searchSuprimentosInput', 'searchSuprimentosBarcode', 'searchSuprimentosUnidade'].forEach(id => {
+            document.getElementById(id).value = '';
+            delete filtrosAplicados[id];
+        });
+        document.getElementById('statusSuprimentos').innerText = "Use os filtros e clique em Pesquisar. Sem nenhum filtro, mostra todos os suprimentos.";
+        document.getElementById('resultsSuprimentos').innerHTML = "";
     }
 
     async function buscarSuprimentos() {
         const query = lerFiltro("searchSuprimentosInput").trim();
+        const barcode = lerFiltro("searchSuprimentosBarcode").trim();
+        const uom = lerFiltro("searchSuprimentosUnidade").trim();
         const status = document.getElementById("statusSuprimentos");
         const results = document.getElementById("resultsSuprimentos");
         const reqId = ++suprimentosReqId;
@@ -1863,7 +1874,7 @@
             const response = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: "get_supplies", query })
+                body: JSON.stringify({ action: "get_supplies", query, barcode, uom })
             });
 
             const data = await response.json();

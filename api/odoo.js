@@ -2517,6 +2517,8 @@ export default async function handler(req, res) {
             const query = body.query || "";
             const domain = ["|", ["categ_id.complete_name", "ilike", "MATÉRIA PRIMA"], ["categ_id.complete_name", "ilike", "MATERIA PRIMA"]];
             if (query) domain.push(["name", "ilike", query]);
+            if (body.barcode) domain.push(["barcode", "ilike", String(body.barcode)]);
+            if (body.uom) domain.push(["uom_id.name", "ilike", String(body.uom)]);
             const result = await execute("product.template", "search_read", [domain], {
                 fields: ["id", "name", "barcode", "standard_price", "qty_available", "uom_id"],
                 order: "name asc",
