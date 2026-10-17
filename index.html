@@ -389,6 +389,7 @@
             <button class="btn-menu" onclick="mostrarTela('financeiroSection'); pesquisar('financeiro', buscarFinanceiro);">FINANCEIRO</button>
             <button class="btn-menu" onclick="abrirTelaTransferencias();">TRANSFERÊNCIAS</button>
             <button class="btn-menu" onclick="abrirTelaQrCodes();">QR CODES</button>
+            <button class="btn-menu" onclick="abrirTelaSuprimentos();">SUPRIMENTOS</button>
         </div>
 
         <div id="installCard">
@@ -449,6 +450,37 @@
                     </tr>
                 </thead>
                 <tbody id="resultsProdutos"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TELA DE SUPRIMENTOS (matéria-prima) -->
+    <div id="suprimentosSection" class="view-section">
+        <div class="top-nav">
+            <button class="btn-back" onclick="mostrarTela('homeSection')">← Voltar</button>
+            <h2>Suprimentos</h2>
+        </div>
+
+        <div class="search-box">
+            <input type="text" id="searchSuprimentosInput" placeholder="Digite o nome do produto...">
+            <button onclick="pesquisar('suprimentos', buscarSuprimentos)">Pesquisar</button>
+        </div>
+
+        <div id="statusSuprimentos" class="status">Carregando suprimentos...</div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>PRODUTO</th>
+                        <th>CÓDIGO DE BARRAS</th>
+                        <th>CUSTO</th>
+                        <th>ESTOQUE</th>
+                        <th>UNIDADE</th>
+                        <th style="width: 80px; text-align: center;">AÇÃO</th>
+                    </tr>
+                </thead>
+                <tbody id="resultsSuprimentos"></tbody>
             </table>
         </div>
     </div>
@@ -741,6 +773,25 @@
         <div class="modal-actions">
             <button class="btn-cancel" onclick="fecharModalEditProduto()">Cancelar</button>
             <button class="btn-save" id="btnSalvarProduto" onclick="salvarEdicaoProduto()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Editar Suprimento (nome e custo) -->
+<div class="modal-overlay" id="editSupplyModal">
+    <div class="modal" style="max-width: 420px;">
+        <h2>Editar Suprimento</h2>
+        <input type="hidden" id="editSupId">
+
+        <label>Descrição</label>
+        <input type="text" id="editSupName">
+
+        <label>Custo (R$) <span id="editSupUnitLabel" style="color:#888; font-weight:400;"></span></label>
+        <input type="number" id="editSupCost" step="any" min="0">
+
+        <div class="modal-actions">
+            <button class="btn-cancel" onclick="fecharModalEditSuprimento()">Cancelar</button>
+            <button class="btn-save" id="btnSalvarSuprimento" onclick="salvarEdicaoSuprimento()">Salvar</button>
         </div>
     </div>
 </div>
@@ -1518,6 +1569,7 @@
         homeEl.style.display = 'none';
         homeEl.classList.remove('active-section'); // essa classe usa !important e mantinha o menu visível
         document.getElementById('produtosSection').style.display = 'none';
+        document.getElementById('suprimentosSection').style.display = 'none';
         document.getElementById('estoqueSection').style.display = 'none';
         document.getElementById('vendasSection').style.display = 'none';
         document.getElementById('financeiroSection').style.display = 'none';
@@ -1536,6 +1588,7 @@
        ------------------------------------------------------------ */
     const FILTROS_TELA = {
         produtos: ['searchInput', 'categoryFilter'],
+        suprimentos: ['searchSuprimentosInput'],
         estoque: ['searchEstoqueInput', 'locationFilter'],
         vendas: ['searchVendasInput', 'vendasWarehouseFilter', 'vendasStatusFilter', 'vendasDataDe', 'vendasDataAte'],
         transferencias: ['searchTransferenciasInput', 'transferOrigemFilter', 'transferDestinoFilter', 'transferDataDe', 'transferDataAte'],
@@ -1575,6 +1628,7 @@
         ajusteSaldoModal: () => fecharModalAjusteSaldo(),
         ajusteEstoqueModal: () => fecharModalAjusteEstoque(),
         editProductModal: () => fecharModalEditProduto(),
+        editSupplyModal: () => fecharModalEditSuprimento(),
         creditoModal: () => fecharModalCredito(),
         createPartnerModal: () => fecharModalParceiro()
     };
@@ -1776,6 +1830,125 @@
             }
         } catch (e) {
             alert('Erro de conexão ao salvar produto.');
+        } finally {
+            btn.innerText = "Salvar";
+            btn.disabled = false;
+        }
+    }
+
+    /* SUPRIMENTOS: só produtos da categoria "MATÉRIA PRIMA" (lista carrega ao abrir a tela) */
+    let suprimentosReqId = 0;
+    const suprimentosPorId = {}; // lista atual (o botão Editar lê daqui, sem passar o nome pelo HTML)
+
+    // custo por unidade pequena (ex.: R$ por grama) é um número bem pequeno: mostra até 6 casas
+    function moedaCusto(v) {
+        return "R$ " + Number(v || 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+    }
+
+    function abrirTelaSuprimentos() {
+        mostrarTela('suprimentosSection');
+        document.getElementById('searchSuprimentosInput').value = '';
+        pesquisar('suprimentos', buscarSuprimentos);
+    }
+
+    async function buscarSuprimentos() {
+        const query = lerFiltro("searchSuprimentosInput").trim();
+        const status = document.getElementById("statusSuprimentos");
+        const results = document.getElementById("resultsSuprimentos");
+        const reqId = ++suprimentosReqId;
+
+        status.innerText = "Pesquisando suprimentos...";
+
+        try {
+            const response = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: "get_supplies", query })
+            });
+
+            const data = await response.json();
+            if (reqId !== suprimentosReqId) return; // o usuário já pesquisou outra coisa: ignora esta resposta
+
+            if (!data.result || data.result.length === 0) {
+                status.innerText = "Nenhum suprimento encontrado.";
+                results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #888;">Nenhum suprimento encontrado</td></tr>`;
+                return;
+            }
+
+            status.innerText = `${data.result.length} suprimento(s) encontrado(s):`;
+            let html = "";
+
+            data.result.forEach(prod => {
+                const qty = prod.qty_available ?? 0;
+                const qtyClass = qty > 0 ? "stock-in" : "stock-out";
+                const unidade = Array.isArray(prod.uom_id) ? prod.uom_id[1] : "-";
+                suprimentosPorId[prod.id] = prod;
+
+                html += `
+                    <tr>
+                        <td><strong>${escHtml(prod.name || '-')}</strong></td>
+                        <td>${escHtml(prod.barcode || '-')}</td>
+                        <td class="cost-col">${moedaCusto(prod.standard_price)}</td>
+                        <td><span class="stock-badge ${qtyClass}">${Number(qty).toLocaleString('pt-BR', { maximumFractionDigits: 3 })}</span></td>
+                        <td>${escHtml(unidade)}</td>
+                        <td style="text-align: center;">
+                            <button class="btn-edit" onclick="editarSuprimentoDaLista(${prod.id})">Editar</button>
+                        </td>
+                    </tr>
+                `;
+            });
+            results.innerHTML = html;
+        } catch (e) {
+            if (reqId !== suprimentosReqId) return;
+            status.innerText = "Erro ao carregar suprimentos.";
+            results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
+        }
+    }
+
+    function editarSuprimentoDaLista(id) {
+        const p = suprimentosPorId[id];
+        if (!p) return;
+        const unidade = Array.isArray(p.uom_id) ? p.uom_id[1] : '';
+        document.getElementById('editSupId').value = p.id;
+        document.getElementById('editSupName').value = p.name || '';
+        document.getElementById('editSupCost').value = p.standard_price ?? 0;
+        document.getElementById('editSupUnitLabel').innerText = unidade ? `(por ${unidade})` : '';
+        document.getElementById('editSupplyModal').style.display = 'flex';
+    }
+
+    function fecharModalEditSuprimento() {
+        document.getElementById('editSupplyModal').style.display = 'none';
+    }
+
+    async function salvarEdicaoSuprimento() {
+        const id = document.getElementById('editSupId').value;
+        const name = document.getElementById('editSupName').value.trim();
+        const standard_price = document.getElementById('editSupCost').value;
+        const btn = document.getElementById('btnSalvarSuprimento');
+
+        if (!name) { alert('Informe a descrição do produto.'); return; }
+        if (standard_price === '' || isNaN(Number(standard_price)) || Number(standard_price) < 0) { alert('Informe um custo válido.'); return; }
+
+        btn.innerText = "Salvando...";
+        btn.disabled = true;
+
+        try {
+            const res = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'update_product', product_id: id, name, standard_price })
+            });
+
+            const data = await res.json();
+            if (data.success) {
+                alert('Suprimento atualizado com sucesso no Odoo!');
+                fecharModalEditSuprimento();
+                buscarSuprimentos();
+            } else {
+                alert(data.error || 'Erro ao atualizar suprimento.');
+            }
+        } catch (e) {
+            alert('Erro de conexão ao salvar suprimento.');
         } finally {
             btn.innerText = "Salvar";
             btn.disabled = false;

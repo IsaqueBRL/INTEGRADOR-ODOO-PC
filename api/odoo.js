@@ -2510,6 +2510,21 @@ export default async function handler(req, res) {
             return res.status(200).json({ result: cats });
         }
 
+        // AÇÃO: SUPRIMENTOS (tela "Suprimentos": só produtos da categoria "MATÉRIA PRIMA", com ou sem "Vendas" marcado)
+        // Devolve nome, código de barras, custo, estoque em mãos e a unidade de medida de cada produto.
+        // A edição (nome e custo) usa a ação "update_product".
+        if (action === "get_supplies") {
+            const query = body.query || "";
+            const domain = ["|", ["categ_id.complete_name", "ilike", "MATÉRIA PRIMA"], ["categ_id.complete_name", "ilike", "MATERIA PRIMA"]];
+            if (query) domain.push(["name", "ilike", query]);
+            const result = await execute("product.template", "search_read", [domain], {
+                fields: ["id", "name", "barcode", "standard_price", "qty_available", "uom_id"],
+                order: "name asc",
+                limit: 500
+            });
+            return res.status(200).json({ result: result || [] });
+        }
+
         // AÇÃO PADRÃO: PRODUTOS (apenas tipo "Mercadorias" com "Vendas" marcado; categoria opcional)
         const query = body.query || "";
         const categoryId = Number(body.category_id) || 0;
