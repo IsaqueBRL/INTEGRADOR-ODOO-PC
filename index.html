@@ -409,6 +409,7 @@
             <button class="btn-menu" onclick="abrirTelaSuprimentos();">SUPRIMENTOS</button>
             <button class="btn-menu" onclick="abrirTelaReposicao();">REPOSIÇÃO</button>
             <button class="btn-menu" onclick="abrirTelaMargem();">MARGEM</button>
+            <button class="btn-menu" onclick="abrirTelaVendidos();">MAIS VENDIDOS</button>
         </div>
 
         <div id="installCard">
@@ -601,6 +602,62 @@
                     </tr>
                 </thead>
                 <tbody id="resultsMargem"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TELA DE PRODUTOS MAIS VENDIDOS / PARADOS -->
+    <div id="vendidosSection" class="view-section">
+        <div class="top-nav">
+            <button class="btn-back" onclick="mostrarTela('homeSection')">← Voltar</button>
+            <h2>Produtos Mais Vendidos</h2>
+        </div>
+
+        <div class="status" style="margin-bottom: 12px;">Ranking dos produtos de venda (matéria-prima fica de fora) pelo que foi vendido no período, em pedidos confirmados. O modo Parados mostra os produtos sem nenhuma venda no período, com o capital parado em estoque (estoque × custo).</div>
+
+        <div class="search-box filtros">
+            <label class="filtro-campo">Período das vendas: de
+                <input type="date" id="vendidosDataDe" title="Data inicial do período">
+            </label>
+            <label class="filtro-campo">até
+                <input type="date" id="vendidosDataAte" title="Data final do período">
+            </label>
+            <select id="vendidosModo" class="filter-select" title="O que mostrar">
+                <option value="vendidos">Mais vendidos</option>
+                <option value="parados">Parados (sem vendas no período)</option>
+            </select>
+            <select id="vendidosCategoria" class="filter-select" title="Filtrar por categoria">
+                <option value="">Todas as categorias</option>
+            </select>
+            <button onclick="pesquisar('vendidos', buscarVendidos)">Pesquisar</button>
+        </div>
+        <div class="rep-nota">Informe o período e clique em Pesquisar. Markup estoque = preço de tabela ÷ custo; markup venda = preço médio realmente recebido ÷ custo. Produtos sem custo ficam fora das médias de markup.</div>
+
+        <div class="rep-cards">
+            <div class="rep-card mg"><div class="t">Média markup estoque</div><div class="n" id="vdMarkupEstoque">-</div></div>
+            <div class="rep-card mg"><div class="t">Média markup venda</div><div class="n" id="vdMarkupVenda">-</div></div>
+            <div class="rep-card mg"><div class="t">Total em estoque</div><div class="n" id="vdTotalEstoque">-</div></div>
+            <div class="rep-card mg"><div class="t" id="vdTituloVendido">Total vendido</div><div class="n" id="vdTotalVendido">-</div></div>
+            <div class="rep-card neg"><div class="t">Capital parado</div><div class="n" id="vdCapital">-</div></div>
+        </div>
+
+        <div id="statusVendidos" class="status">Informe o período (data inicial e final) e clique em Pesquisar.</div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>PRODUTO</th>
+                        <th>CATEGORIA</th>
+                        <th>MARKUP ESTOQUE</th>
+                        <th>MARKUP VENDA</th>
+                        <th>QTD. EM ESTOQUE</th>
+                        <th>QTD. VENDIDA</th>
+                        <th>VALOR GERADO</th>
+                        <th>CAPITAL PARADO</th>
+                    </tr>
+                </thead>
+                <tbody id="resultsVendidos"></tbody>
             </table>
         </div>
     </div>
@@ -1761,6 +1818,7 @@
         document.getElementById('suprimentosSection').style.display = 'none';
         document.getElementById('reposicaoSection').style.display = 'none';
         document.getElementById('margemSection').style.display = 'none';
+        document.getElementById('vendidosSection').style.display = 'none';
         document.getElementById('estoqueSection').style.display = 'none';
         document.getElementById('vendasSection').style.display = 'none';
         document.getElementById('financeiroSection').style.display = 'none';
@@ -1781,6 +1839,7 @@
         produtos: ['searchInput', 'categoryFilter'],
         suprimentos: ['searchSuprimentosInput', 'searchSuprimentosBarcode', 'searchSuprimentosUnidade'],
         margem: ['margemDataDe', 'margemDataAte', 'margemCategoria'],
+        vendidos: ['vendidosDataDe', 'vendidosDataAte', 'vendidosModo', 'vendidosCategoria'],
         estoque: ['searchEstoqueInput', 'locationFilter'],
         vendas: ['searchVendasInput', 'vendasWarehouseFilter', 'vendasStatusFilter', 'vendasDataDe', 'vendasDataAte'],
         transferencias: ['searchTransferenciasInput', 'transferOrigemFilter', 'transferDestinoFilter', 'transferDataDe', 'transferDataAte'],
@@ -2328,6 +2387,172 @@
         } catch (e) {
             if (reqId !== margemReqId) return;
             status.innerText = "Erro ao calcular as margens.";
+            results.innerHTML = `<tr><td colspan="8" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
+        }
+    }
+
+    /* PRODUTOS MAIS VENDIDOS / PARADOS (só produtos de venda)
+       Período obrigatório (de/até). Modo "vendidos": quem vendeu no período, maior quantidade primeiro.
+       Modo "parados": quem NÃO vendeu nada no período, maior estoque primeiro (com o capital parado = estoque x custo). */
+    let vendidosReqId = 0;
+
+    // Toda a conta fica aqui (sem acessar a tela), para poder ser testada.
+    //  markup estoque = preço de tabela / custo     markup venda = preço médio recebido / custo
+    // Produto sem custo (<= 0) fica fora das médias de markup. Capital parado = estoque positivo x custo.
+    function calcularVendidos(produtos, modo) {
+        const media = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+        const todos = produtos.map(p => {
+            const custo = Number(p.standard_price) || 0;
+            const preco = Number(p.list_price) || 0;
+            const estoque = Number(p.stock) || 0;
+            const qtd = Number(p.sold_qty) || 0;
+            const liquido = Number(p.sold_net) || 0;
+            const semCusto = custo <= 0;
+            const precoMedio = (qtd > 0 && liquido > 0) ? liquido / qtd : null;
+            return {
+                ...p, custo, preco, estoque, qtd, liquido, semCusto, precoMedio,
+                markupEstoque: (!semCusto && preco > 0) ? preco / custo : null,
+                markupVenda: (!semCusto && precoMedio !== null) ? precoMedio / custo : null,
+                capital: (!semCusto && estoque > 0) ? estoque * custo : 0
+            };
+        });
+        const itens = todos
+            .filter(i => modo === 'parados' ? i.qtd <= 0 : i.qtd > 0)
+            .sort((a, b) => modo === 'parados'
+                ? (b.estoque - a.estoque) || a.name.localeCompare(b.name, 'pt-BR')
+                : (b.qtd - a.qtd) || a.name.localeCompare(b.name, 'pt-BR'));
+        return {
+            itens,
+            mediaMarkupEstoque: media(itens.filter(i => i.markupEstoque !== null).map(i => i.markupEstoque)),
+            mediaMarkupVenda: media(itens.filter(i => i.markupVenda !== null).map(i => i.markupVenda)),
+            totalEstoque: itens.reduce((a, i) => a + i.estoque, 0),
+            totalVendido: itens.reduce((a, i) => a + i.qtd, 0),
+            totalValor: itens.reduce((a, i) => a + i.liquido, 0),
+            capitalParado: itens.reduce((a, i) => a + i.capital, 0),
+            semCusto: itens.filter(i => i.semCusto).length
+        };
+    }
+
+    function limparTelaVendidos(mensagem) {
+        ++vendidosReqId; // descarta qualquer busca anterior ainda em andamento
+        ['vdMarkupEstoque', 'vdMarkupVenda', 'vdTotalEstoque', 'vdTotalVendido', 'vdCapital'].forEach(id => { document.getElementById(id).innerText = '-'; });
+        document.getElementById('resultsVendidos').innerHTML = '';
+        document.getElementById('statusVendidos').innerText = mensagem;
+    }
+
+    function abrirTelaVendidos() {
+        mostrarTela('vendidosSection');
+        ['vendidosDataDe', 'vendidosDataAte', 'vendidosCategoria'].forEach(id => {
+            document.getElementById(id).value = '';
+            delete filtrosAplicados[id];
+        });
+        document.getElementById('vendidosModo').value = 'vendidos';
+        delete filtrosAplicados['vendidosModo'];
+        limparTelaVendidos('Informe o período (data inicial e final) e clique em Pesquisar.');
+        carregarCategoriasVendidos();
+    }
+
+    async function carregarCategoriasVendidos() {
+        const select = document.getElementById('vendidosCategoria');
+        try {
+            const response = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: "get_product_categories" })
+            });
+            const data = await response.json();
+            if (!data.result) return;
+            const atual = select.value;
+            select.innerHTML = '<option value="">Todas as categorias</option>' +
+                data.result.map(c => `<option value="${c.id}">${escHtml(c.name)}</option>`).join('');
+            if (atual && data.result.some(c => String(c.id) === atual)) select.value = atual;
+        } catch (e) { /* o filtro fica só com "Todas as categorias" */ }
+    }
+
+    async function buscarVendidos() {
+        const status = document.getElementById('statusVendidos');
+        const results = document.getElementById('resultsVendidos');
+        const dataDe = lerFiltro('vendidosDataDe');
+        const dataAte = lerFiltro('vendidosDataAte');
+        const categoria = lerFiltro('vendidosCategoria');
+        const modo = lerFiltro('vendidosModo') === 'parados' ? 'parados' : 'vendidos';
+
+        if (!dataDe || !dataAte) {
+            limparTelaVendidos('Informe o período (data inicial e final) e clique em Pesquisar.');
+            alert('Informe a data inicial e a data final do período.');
+            return;
+        }
+        if (dataDe > dataAte) {
+            limparTelaVendidos('A data inicial não pode ser maior que a data final.');
+            alert('A data inicial não pode ser maior que a data final.');
+            return;
+        }
+        const reqId = ++vendidosReqId;
+        const corpo = {
+            action: "get_best_sellers",
+            category_id: categoria || null,
+            date_from: dataUtcOdoo(new Date(dataDe + 'T00:00:00')),
+            date_to: dataUtcOdoo(new Date(dataAte + 'T23:59:59'))
+        };
+        const dataBR = iso => iso.split('-').reverse().join('/');
+        status.innerText = "Calculando...";
+
+        try {
+            const response = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(corpo)
+            });
+            const data = await response.json();
+            if (reqId !== vendidosReqId) return;
+            if (!data.result) throw new Error(data.error || 'sem resultado');
+
+            const r = calcularVendidos(data.result, modo);
+            const num2 = v => v === null ? '-' : v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            // números simples sem separador de milhar (a ordenação da tabela lê o texto da célula)
+            const qtdTxt = v => Number(v).toLocaleString('pt-BR', { maximumFractionDigits: 3, useGrouping: false });
+            const moeda = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+            const cinza = 'var(--text-muted, #777)';
+
+            document.getElementById('vdMarkupEstoque').innerText = num2(r.mediaMarkupEstoque);
+            document.getElementById('vdMarkupVenda').innerText = modo === 'parados' ? '-' : num2(r.mediaMarkupVenda);
+            document.getElementById('vdTotalEstoque').innerText = qtdTxt(r.totalEstoque);
+            document.getElementById('vdTotalVendido').innerText = modo === 'parados' ? '-' : qtdTxt(r.totalVendido);
+            document.getElementById('vdCapital').innerText = moeda(r.capitalParado);
+
+            // ordenação inicial: vendidos pela quantidade vendida; parados pela quantidade em estoque
+            document.querySelectorAll('#vendidosSection thead th').forEach((th, i) => {
+                th.classList.remove('sort-asc', 'sort-desc');
+                if (i === (modo === 'parados' ? 4 : 5)) th.classList.add('sort-desc');
+            });
+
+            const periodoTxt = `${dataBR(dataDe)} a ${dataBR(dataAte)}`;
+            if (!r.itens.length) {
+                status.innerText = modo === 'parados'
+                    ? `Nenhum produto parado no período ${periodoTxt}.`
+                    : `Nenhuma venda no período ${periodoTxt}.`;
+                results.innerHTML = `<tr><td colspan="8" style="text-align: center; color: #888;">Nenhum produto encontrado</td></tr>`;
+                return;
+            }
+            status.innerText = (modo === 'parados'
+                ? `${r.itens.length} produto(s) sem vendas de ${periodoTxt}`
+                : `${r.itens.length} produto(s) vendido(s) de ${periodoTxt}`)
+                + (r.semCusto ? ` — ${r.semCusto} sem custo cadastrado (fora das médias de markup):` : ':');
+
+            results.innerHTML = r.itens.map(i => `
+                <tr>
+                    <td><strong>${escHtml(i.name)}</strong></td>
+                    <td>${escHtml(i.category)}</td>
+                    <td style="font-weight:700;">${i.markupEstoque !== null ? num2(i.markupEstoque) : `<span style="color:${cinza};">${i.semCusto ? 'Sem custo' : '-'}</span>`}</td>
+                    <td style="font-weight:700;">${i.markupVenda !== null ? num2(i.markupVenda) : `<span style="color:${cinza};">-</span>`}</td>
+                    <td>${qtdTxt(i.estoque)}</td>
+                    <td>${qtdTxt(i.qtd)}</td>
+                    <td>${moeda(i.liquido)}</td>
+                    <td>${i.capital > 0 ? moeda(i.capital) : '-'}</td>
+                </tr>`).join('');
+        } catch (e) {
+            if (reqId !== vendidosReqId) return;
+            status.innerText = "Erro ao carregar os dados.";
             results.innerHTML = `<tr><td colspan="8" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
     }

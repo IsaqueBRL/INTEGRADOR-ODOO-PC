@@ -2639,6 +2639,68 @@ export default async function handler(req, res) {
             return res.status(200).json({ result });
         }
 
+        // AÇÃO: PRODUTOS MAIS VENDIDOS / PARADOS (só produtos de VENDA; matéria-prima fica de fora)
+        // Soma, por produto, a quantidade e o valor líquido vendidos no período (pedidos Confirmados = sale + done).
+        // Devolve também estoque (qty_available = todos os locais), custo e preço de tabela cadastrados.
+        // Produtos arquivados que venderam no período entram (para o ranking ficar completo);
+        // produtos sem vendas (modo "Parados") são só os ativos do catálogo.
+        if (action === "get_best_sellers") {
+            const categoryId = Number(body.category_id) || 0;
+            const baseDomain = [
+                ...PRODUCT_BASE_DOMAIN,
+                ["categ_id.complete_name", "not ilike", "MATÉRIA PRIMA"],
+                ["categ_id.complete_name", "not ilike", "MATERIA PRIMA"]
+            ];
+            if (categoryId) baseDomain.push(["categ_id", "child_of", categoryId]);
+
+            const lineDomain = [
+                ["display_type", "=", false],
+                ["order_id.state", "in", ["sale", "done"]]
+            ];
+            if (body.date_from) lineDomain.push(["order_id.date_order", ">=", body.date_from]);
+            if (body.date_to) lineDomain.push(["order_id.date_order", "<=", body.date_to]);
+            const lines = await execute("sale.order.line", "search_read", [lineDomain], {
+                fields: ["product_template_id", "product_uom_qty", "price_subtotal"],
+                limit: 50000
+            });
+
+            const qtyByTemplate = {};
+            const netByTemplate = {};
+            (lines || []).forEach(l => {
+                const tid = Array.isArray(l.product_template_id) ? l.product_template_id[0] : l.product_template_id;
+                if (!tid) return;
+                qtyByTemplate[tid] = (qtyByTemplate[tid] || 0) + (Number(l.product_uom_qty) || 0);
+                netByTemplate[tid] = (netByTemplate[tid] || 0) + (Number(l.price_subtotal) || 0);
+            });
+            const soldIds = Object.keys(qtyByTemplate).map(Number);
+
+            const fields = ["id", "name", "categ_id", "list_price", "standard_price", "qty_available"];
+            // ativos (catálogo atual) + arquivados que venderam no período
+            const active = await execute("product.template", "search_read", [baseDomain], {
+                fields, order: "name asc", limit: 1000
+            });
+            const known = new Set((active || []).map(p => p.id));
+            const missing = soldIds.filter(id => !known.has(id));
+            let archived = [];
+            if (missing.length) {
+                archived = await execute("product.template", "search_read", [[...baseDomain, ["id", "in", missing]]], {
+                    fields, limit: 1000, context: { active_test: false }
+                });
+            }
+
+            const result = [...(active || []), ...(archived || [])].map(p => ({
+                id: p.id,
+                name: p.name,
+                category: Array.isArray(p.categ_id) ? p.categ_id[1] : "Sem Categoria",
+                list_price: Number(p.list_price) || 0,
+                standard_price: Number(p.standard_price) || 0,
+                stock: Number(p.qty_available) || 0,
+                sold_qty: qtyByTemplate[p.id] || 0,
+                sold_net: netByTemplate[p.id] || 0
+            }));
+            return res.status(200).json({ result });
+        }
+
         // AÇÃO PADRÃO: PRODUTOS (apenas tipo "Mercadorias" com "Vendas" marcado; categoria opcional)
         const query = body.query || "";
         const categoryId = Number(body.category_id) || 0;
