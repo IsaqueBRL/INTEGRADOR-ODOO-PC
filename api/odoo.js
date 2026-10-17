@@ -2587,6 +2587,58 @@ export default async function handler(req, res) {
             return res.status(200).json({ result });
         }
 
+        // AÇÃO: MARGEM DE LUCRO POR PRODUTO (só produtos de VENDA; matéria-prima fica de fora)
+        // Preço de venda e custo são os CADASTRADOS no produto (list_price / standard_price).
+        // O período (date_from/date_to, em UTC, opcionais) só serve para somar o que foi vendido de cada produto
+        // (pedidos Confirmados = sale + done): quantidade e valor líquido (já com desconto, sem impostos),
+        // usados para a Margem Ponderada e a Margem Real. Sem datas = todo o histórico.
+        if (action === "get_margins") {
+            const categoryId = Number(body.category_id) || 0;
+            const prodDomain = [
+                ...PRODUCT_BASE_DOMAIN,
+                ["categ_id.complete_name", "not ilike", "MATÉRIA PRIMA"],
+                ["categ_id.complete_name", "not ilike", "MATERIA PRIMA"]
+            ];
+            if (categoryId) prodDomain.push(["categ_id", "child_of", categoryId]);
+
+            const products = await execute("product.template", "search_read", [prodDomain], {
+                fields: ["id", "name", "categ_id", "list_price", "standard_price"],
+                order: "name asc",
+                limit: 1000
+            });
+
+            const lineDomain = [
+                ["display_type", "=", false],
+                ["order_id.state", "in", ["sale", "done"]]
+            ];
+            if (body.date_from) lineDomain.push(["order_id.date_order", ">=", body.date_from]);
+            if (body.date_to) lineDomain.push(["order_id.date_order", "<=", body.date_to]);
+            const lines = await execute("sale.order.line", "search_read", [lineDomain], {
+                fields: ["product_template_id", "product_uom_qty", "price_subtotal"],
+                limit: 50000
+            });
+
+            const qtyByTemplate = {};
+            const netByTemplate = {};
+            (lines || []).forEach(l => {
+                const tid = Array.isArray(l.product_template_id) ? l.product_template_id[0] : l.product_template_id;
+                if (!tid) return;
+                qtyByTemplate[tid] = (qtyByTemplate[tid] || 0) + (Number(l.product_uom_qty) || 0);
+                netByTemplate[tid] = (netByTemplate[tid] || 0) + (Number(l.price_subtotal) || 0);
+            });
+
+            const result = (products || []).map(p => ({
+                id: p.id,
+                name: p.name,
+                category: Array.isArray(p.categ_id) ? p.categ_id[1] : "Sem Categoria",
+                list_price: Number(p.list_price) || 0,
+                standard_price: Number(p.standard_price) || 0,
+                sold_qty: qtyByTemplate[p.id] || 0,
+                sold_net: netByTemplate[p.id] || 0
+            }));
+            return res.status(200).json({ result });
+        }
+
         // AÇÃO PADRÃO: PRODUTOS (apenas tipo "Mercadorias" com "Vendas" marcado; categoria opcional)
         const query = body.query || "";
         const categoryId = Number(body.category_id) || 0;
