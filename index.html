@@ -84,6 +84,17 @@
 
         .status { text-align: center; margin-bottom: 15px; font-size: 14px; color: #555; font-weight: 500; }
 
+        .rep-periodos { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 15px; }
+        .rep-periodos .lbl { font-size: 13px; color: #666; font-weight: 600; }
+        .btn-periodo { background: #eceff3; color: #444; border: none; padding: 9px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; }
+        .btn-periodo.active { background: var(--edit-color); color: #fff; }
+        .rep-cards { display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 18px; }
+        .rep-card { flex: 1; min-width: 200px; border: 1px solid var(--border-color); border-radius: 10px; padding: 14px; text-align: center; background: #fff; }
+        .rep-card .t { font-size: 12px; font-weight: 700; letter-spacing: .5px; color: #666; text-transform: uppercase; }
+        .rep-card .n { font-size: 28px; font-weight: 700; margin-top: 4px; }
+        .rep-card.urg { background: #ffebee; } .rep-card.urg .n { color: var(--danger-color); }
+        .rep-card.ate .n { color: #c8630a; }
+        .rep-card.ok .n { color: var(--success-color); }
         .copy-bar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
         .btn-copy-tabela { background-color: var(--edit-color); color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; }
         .btn-copy-tabela:hover { opacity: .9; }
@@ -393,6 +404,7 @@
             <button class="btn-menu" onclick="abrirTelaTransferencias();">TRANSFERÊNCIAS</button>
             <button class="btn-menu" onclick="abrirTelaQrCodes();">QR CODES</button>
             <button class="btn-menu" onclick="abrirTelaSuprimentos();">SUPRIMENTOS</button>
+            <button class="btn-menu" onclick="abrirTelaReposicao();">REPOSIÇÃO</button>
         </div>
 
         <div id="installCard">
@@ -488,6 +500,51 @@
                     </tr>
                 </thead>
                 <tbody id="resultsSuprimentos"></tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- TELA DE PREVISÃO DE REPOSIÇÃO (só produtos de venda) -->
+    <div id="reposicaoSection" class="view-section">
+        <div class="top-nav">
+            <button class="btn-back" onclick="mostrarTela('homeSection')">← Voltar</button>
+            <h2>Previsão de Reposição</h2>
+        </div>
+
+        <div class="status" style="margin-bottom: 12px;">Média de venda diária (pedidos confirmados; orçamentos e cancelados não entram) comparada ao estoque atual, para saber o que produzir antes de zerar. Só produtos de venda (matéria-prima fica de fora).</div>
+
+        <div class="rep-periodos">
+            <span class="lbl">Velocidade de venda calculada em:</span>
+            <button type="button" class="btn-periodo" id="repPeriodo7" onclick="setReposicaoPeriodo(7)">7 dias</button>
+            <button type="button" class="btn-periodo active" id="repPeriodo14" onclick="setReposicaoPeriodo(14)">14 dias</button>
+            <button type="button" class="btn-periodo" id="repPeriodo30" onclick="setReposicaoPeriodo(30)">30 dias</button>
+            <select id="repCategoria" title="Filtrar por categoria" onchange="buscarReposicao()" style="margin-left:auto; padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:240px;cursor:pointer;">
+                <option value="">Todas as categorias</option>
+            </select>
+        </div>
+
+        <div class="rep-cards">
+            <div class="rep-card urg"><div class="t">🔴 Urgente (≤ 3 dias)</div><div class="n" id="repTotUrgente">-</div></div>
+            <div class="rep-card ate"><div class="t">🟡 Atenção (≤ 7 dias)</div><div class="n" id="repTotAtencao">-</div></div>
+            <div class="rep-card ok"><div class="t">🟢 OK (&gt; 7 dias)</div><div class="n" id="repTotOk">-</div></div>
+        </div>
+
+        <div id="statusReposicao" class="status">Carregando previsão...</div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>PRODUTO</th>
+                        <th>CATEGORIA</th>
+                        <th>ESTOQUE ATUAL</th>
+                        <th>VENDIDO NO PERÍODO</th>
+                        <th>MÉDIA/DIA</th>
+                        <th class="sort-asc">DIAS DE ESTOQUE</th>
+                        <th>STATUS</th>
+                    </tr>
+                </thead>
+                <tbody id="resultsReposicao"></tbody>
             </table>
         </div>
     </div>
@@ -1646,6 +1703,7 @@
         homeEl.classList.remove('active-section'); // essa classe usa !important e mantinha o menu visível
         document.getElementById('produtosSection').style.display = 'none';
         document.getElementById('suprimentosSection').style.display = 'none';
+        document.getElementById('reposicaoSection').style.display = 'none';
         document.getElementById('estoqueSection').style.display = 'none';
         document.getElementById('vendasSection').style.display = 'none';
         document.getElementById('financeiroSection').style.display = 'none';
@@ -1909,6 +1967,117 @@
         } finally {
             btn.innerText = "Salvar";
             btn.disabled = false;
+        }
+    }
+
+    /* PREVISÃO DE REPOSIÇÃO (só produtos de venda): estoque atual ÷ média de venda diária = dias até zerar */
+    let reposicaoPeriodoDias = 14;
+    let reposicaoReqId = 0;
+
+    function abrirTelaReposicao() {
+        mostrarTela('reposicaoSection');
+        carregarCategoriasReposicao();
+        buscarReposicao();
+    }
+
+    async function carregarCategoriasReposicao() {
+        const select = document.getElementById('repCategoria');
+        try {
+            const response = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: "get_product_categories" }) // só categorias de produtos de venda
+            });
+            const data = await response.json();
+            if (!data.result) return;
+            const atual = select.value;
+            select.innerHTML = '<option value="">Todas as categorias</option>' +
+                data.result.map(c => `<option value="${c.id}">${escHtml(c.name)}</option>`).join('');
+            if (atual && data.result.some(c => String(c.id) === atual)) select.value = atual;
+        } catch (e) { /* o filtro fica só com "Todas as categorias" */ }
+    }
+
+    function setReposicaoPeriodo(dias) {
+        reposicaoPeriodoDias = dias;
+        [7, 14, 30].forEach(d => document.getElementById('repPeriodo' + d).classList.toggle('active', d === dias));
+        buscarReposicao();
+    }
+
+    // data/hora UTC no formato do Odoo ("2026-10-17 04:00:00")
+    function dataUtcOdoo(d) {
+        return d.toISOString().slice(0, 19).replace('T', ' ');
+    }
+
+    async function buscarReposicao() {
+        const status = document.getElementById('statusReposicao');
+        const results = document.getElementById('resultsReposicao');
+        const reqId = ++reposicaoReqId;
+        const dias = reposicaoPeriodoDias;
+        const categoria = document.getElementById('repCategoria').value;
+
+        // janela: da meia-noite (horário local) de "hoje - (dias - 1)" até agora; hoje conta como 1 dia
+        const inicio = new Date(); inicio.setHours(0, 0, 0, 0); inicio.setDate(inicio.getDate() - (dias - 1));
+        const fim = new Date();
+
+        status.innerText = "Calculando previsão...";
+
+        try {
+            const response = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: "get_replenishment", category_id: categoria || null, date_from: dataUtcOdoo(inicio), date_to: dataUtcOdoo(fim) })
+            });
+            const data = await response.json();
+            if (reqId !== reposicaoReqId) return;
+            if (!data.result) throw new Error(data.error || 'sem resultado');
+
+            const lista = data.result.map(p => {
+                const mediaDia = p.sold / dias;
+                // sem venda no período não dá para prever ruptura: fica sem "dias" e vai para o fim da lista
+                const diasReal = mediaDia > 0 ? p.qty_available / mediaDia : null;
+                let nivel, texto, cor;
+                if (diasReal === null) { nivel = 3; texto = p.qty_available > 0 ? '- Sem venda no período' : '- Sem estoque e sem venda'; cor = '#777'; }
+                else if (diasReal <= 3) { nivel = 0; texto = '🔴 Urgente'; cor = '#bb0000'; }
+                else if (diasReal <= 7) { nivel = 1; texto = '🟡 Atenção'; cor = '#c8630a'; }
+                else { nivel = 2; texto = '🟢 OK'; cor = '#0c5e2e'; }
+                return { ...p, mediaDia, diasReal, nivel, texto, cor };
+            }).filter(p => p.qty_available > 0 || p.sold > 0); // ignora produto sem estoque e sem venda
+
+            document.getElementById('repTotUrgente').innerText = lista.filter(i => i.nivel === 0).length;
+            document.getElementById('repTotAtencao').innerText = lista.filter(i => i.nivel === 1).length;
+            document.getElementById('repTotOk').innerText = lista.filter(i => i.nivel === 2).length;
+
+            // quem zera primeiro no topo; sem previsão no fim
+            lista.sort((a, b) => (a.diasReal === null ? Infinity : a.diasReal) - (b.diasReal === null ? Infinity : b.diasReal) || a.name.localeCompare(b.name, 'pt-BR'));
+
+            // seta de ordenação volta para "dias de estoque" crescente (a ordem em que a lista foi montada)
+            document.querySelectorAll('#reposicaoSection thead th').forEach((th, i) => {
+                th.classList.remove('sort-asc', 'sort-desc');
+                if (i === 5) th.classList.add('sort-asc');
+            });
+
+            if (!lista.length) {
+                status.innerText = "Nenhum produto com estoque ou venda no período.";
+                results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #888;">Nenhum produto com estoque ou venda no período</td></tr>`;
+                return;
+            }
+
+            const num = n => Number(n).toLocaleString('pt-BR', { maximumFractionDigits: 2 });
+            status.innerText = `${lista.length} produto(s) analisado(s) — vendas dos últimos ${dias} dias:`;
+            results.innerHTML = lista.map(i => `
+                <tr>
+                    <td><strong>${escHtml(i.name)}</strong></td>
+                    <td>${escHtml(i.category)}</td>
+                    <td><span class="stock-badge ${i.qty_available > 0 ? 'stock-in' : 'stock-out'}">${num(i.qty_available)} un</span></td>
+                    <td><span class="stock-badge stock-in">${num(i.sold)} un</span></td>
+                    <td>${num(i.mediaDia)} un/dia</td>
+                    <td style="font-weight:700; color:${i.cor};">${i.diasReal === null ? '-' : i.diasReal.toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' dias'}</td>
+                    <td style="font-weight:600; color:${i.cor};">${i.texto}</td>
+                </tr>`).join('');
+        } catch (e) {
+            if (reqId !== reposicaoReqId) return;
+            status.innerText = "Erro ao calcular a previsão de reposição.";
+            results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
     }
 

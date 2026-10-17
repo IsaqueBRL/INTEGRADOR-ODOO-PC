@@ -2540,6 +2540,53 @@ export default async function handler(req, res) {
             return res.status(200).json({ result: result || [] });
         }
 
+        // AÇÃO: PREVISÃO DE REPOSIÇÃO (só produtos de VENDA; matéria-prima fica de fora)
+        // Devolve, por produto, o estoque atual e a quantidade vendida no período (pedidos Confirmados = sale + done;
+        // orçamentos/rascunhos e cancelados não entram). A média por dia, os dias de estoque e o semáforo
+        // são calculados na tela. date_from/date_to chegam em UTC, já convertidos do horário local pelo navegador.
+        if (action === "get_replenishment") {
+            const categoryId = Number(body.category_id) || 0;
+            const prodDomain = [
+                ...PRODUCT_BASE_DOMAIN,
+                ["categ_id.complete_name", "not ilike", "MATÉRIA PRIMA"],
+                ["categ_id.complete_name", "not ilike", "MATERIA PRIMA"]
+            ];
+            if (categoryId) prodDomain.push(["categ_id", "child_of", categoryId]);
+
+            const products = await execute("product.template", "search_read", [prodDomain], {
+                fields: ["id", "name", "qty_available", "categ_id"],
+                order: "name asc",
+                limit: 1000
+            });
+
+            const lineDomain = [
+                ["display_type", "=", false],
+                ["order_id.state", "in", ["sale", "done"]]
+            ];
+            if (body.date_from) lineDomain.push(["order_id.date_order", ">=", body.date_from]);
+            if (body.date_to) lineDomain.push(["order_id.date_order", "<=", body.date_to]);
+            const lines = await execute("sale.order.line", "search_read", [lineDomain], {
+                fields: ["product_template_id", "product_uom_qty"],
+                limit: 20000
+            });
+
+            const soldByTemplate = {};
+            (lines || []).forEach(l => {
+                const tid = Array.isArray(l.product_template_id) ? l.product_template_id[0] : l.product_template_id;
+                if (!tid) return;
+                soldByTemplate[tid] = (soldByTemplate[tid] || 0) + (Number(l.product_uom_qty) || 0);
+            });
+
+            const result = (products || []).map(p => ({
+                id: p.id,
+                name: p.name,
+                category: Array.isArray(p.categ_id) ? p.categ_id[1] : "Sem Categoria",
+                qty_available: Number(p.qty_available) || 0,
+                sold: soldByTemplate[p.id] || 0
+            }));
+            return res.status(200).json({ result });
+        }
+
         // AÇÃO PADRÃO: PRODUTOS (apenas tipo "Mercadorias" com "Vendas" marcado; categoria opcional)
         const query = body.query || "";
         const categoryId = Number(body.category_id) || 0;
