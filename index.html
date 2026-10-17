@@ -562,17 +562,19 @@
 
         <div class="status" style="margin-bottom: 12px;">Compara o preço de venda cadastrado com o custo cadastrado de cada produto de venda (matéria-prima fica de fora). A Margem Real usa o preço médio efetivamente recebido nas vendas, já com descontos, e não considera impostos nem taxas.</div>
 
-        <div class="rep-periodos">
-            <span class="lbl">Período das vendas:</span>
-            <button type="button" class="btn-periodo" id="margemPeriodo7" onclick="setMargemPeriodo(7)">7 dias</button>
-            <button type="button" class="btn-periodo" id="margemPeriodo14" onclick="setMargemPeriodo(14)">14 dias</button>
-            <button type="button" class="btn-periodo active" id="margemPeriodo30" onclick="setMargemPeriodo(30)">30 dias</button>
-            <button type="button" class="btn-periodo" id="margemPeriodo0" onclick="setMargemPeriodo(0)">Todo o histórico</button>
-            <select id="margemCategoria" title="Filtrar por categoria" onchange="buscarMargens()" style="margin-left:auto; padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:240px;cursor:pointer;">
+        <div class="search-box filtros">
+            <label class="filtro-campo">Período das vendas: de
+                <input type="date" id="margemDataDe" title="Data inicial do período das vendas">
+            </label>
+            <label class="filtro-campo">até
+                <input type="date" id="margemDataAte" title="Data final do período das vendas">
+            </label>
+            <select id="margemCategoria" class="filter-select" title="Filtrar por categoria">
                 <option value="">Todas as categorias</option>
             </select>
+            <button onclick="pesquisar('margem', buscarMargens)">Pesquisar</button>
         </div>
-        <div class="rep-nota">O período vale só para a Margem Ponderada, a Margem Real e a coluna Margem Real. Preço, custo, margem e markup são sempre os do cadastro atual.</div>
+        <div class="rep-nota">Informe o período e clique em Pesquisar. O período vale só para a Margem Ponderada, a Margem Real e a coluna Margem Real; preço, custo, margem e markup são sempre os do cadastro atual.</div>
 
         <div class="rep-cards">
             <div class="rep-card mg"><div class="t">Média de markup</div><div class="n" id="mgMediaMarkup">-</div></div>
@@ -582,7 +584,7 @@
             <div class="rep-card neg"><div class="t">Produtos com margem negativa</div><div class="n" id="mgNegativos">-</div></div>
         </div>
 
-        <div id="statusMargem" class="status">Carregando margens...</div>
+        <div id="statusMargem" class="status">Informe o período (data inicial e final) e clique em Pesquisar para ver as margens.</div>
 
         <div class="table-container">
             <table>
@@ -1778,6 +1780,7 @@
     const FILTROS_TELA = {
         produtos: ['searchInput', 'categoryFilter'],
         suprimentos: ['searchSuprimentosInput', 'searchSuprimentosBarcode', 'searchSuprimentosUnidade'],
+        margem: ['margemDataDe', 'margemDataAte', 'margemCategoria'],
         estoque: ['searchEstoqueInput', 'locationFilter'],
         vendas: ['searchVendasInput', 'vendasWarehouseFilter', 'vendasStatusFilter', 'vendasDataDe', 'vendasDataAte'],
         transferencias: ['searchTransferenciasInput', 'transferOrigemFilter', 'transferDestinoFilter', 'transferDataDe', 'transferDataAte'],
@@ -2139,7 +2142,6 @@
     /* MARGEM DE LUCRO POR PRODUTO (só produtos de venda)
        Precificação: preço de venda x custo, ambos CADASTRADOS no produto (list_price / standard_price).
        Período: vale só para o que foi vendido (Margem Ponderada, Margem Real e coluna Margem Real). */
-    let margemPeriodoDias = 30; // 0 = todo o histórico
     let margemReqId = 0;
 
     // Toda a conta fica aqui (sem acessar a tela), para poder ser testada.
@@ -2188,10 +2190,22 @@
         };
     }
 
+    // Abre a tela vazia: os dados só aparecem depois que o usuário informa o período e clica em Pesquisar
+    function limparTelaMargem(mensagem) {
+        ++margemReqId; // descarta qualquer busca anterior ainda em andamento
+        ['mgMediaMarkup', 'mgMediaMargem', 'mgPonderada', 'mgReal', 'mgNegativos'].forEach(id => { document.getElementById(id).innerText = '-'; });
+        document.getElementById('resultsMargem').innerHTML = '';
+        document.getElementById('statusMargem').innerText = mensagem;
+    }
+
     function abrirTelaMargem() {
         mostrarTela('margemSection');
+        ['margemDataDe', 'margemDataAte', 'margemCategoria'].forEach(id => {
+            document.getElementById(id).value = '';
+            delete filtrosAplicados[id];
+        });
+        limparTelaMargem('Informe o período (data inicial e final) e clique em Pesquisar para ver as margens.');
         carregarCategoriasMargem();
-        buscarMargens();
     }
 
     async function carregarCategoriasMargem() {
@@ -2211,26 +2225,34 @@
         } catch (e) { /* o filtro fica só com "Todas as categorias" */ }
     }
 
-    function setMargemPeriodo(dias) {
-        margemPeriodoDias = dias;
-        [7, 14, 30, 0].forEach(d => document.getElementById('margemPeriodo' + d).classList.toggle('active', d === dias));
-        buscarMargens();
-    }
-
     async function buscarMargens() {
         const status = document.getElementById('statusMargem');
         const results = document.getElementById('resultsMargem');
-        const reqId = ++margemReqId;
-        const dias = margemPeriodoDias;
-        const categoria = document.getElementById('margemCategoria').value;
+        const dataDe = lerFiltro('margemDataDe');
+        const dataAte = lerFiltro('margemDataAte');
+        const categoria = lerFiltro('margemCategoria');
 
-        // janela: da meia-noite (horário local) de "hoje - (dias - 1)" até agora; hoje conta como 1 dia
-        const corpo = { action: "get_margins", category_id: categoria || null };
-        if (dias > 0) {
-            const inicio = new Date(); inicio.setHours(0, 0, 0, 0); inicio.setDate(inicio.getDate() - (dias - 1));
-            corpo.date_from = dataUtcOdoo(inicio);
-            corpo.date_to = dataUtcOdoo(new Date());
+        // sem período não mostra nada: o usuário precisa informar a data inicial e a final primeiro
+        if (!dataDe || !dataAte) {
+            limparTelaMargem('Informe o período (data inicial e final) e clique em Pesquisar para ver as margens.');
+            alert('Informe a data inicial e a data final do período.');
+            return;
         }
+        if (dataDe > dataAte) {
+            limparTelaMargem('A data inicial não pode ser maior que a data final.');
+            alert('A data inicial não pode ser maior que a data final.');
+            return;
+        }
+        const reqId = ++margemReqId;
+
+        // do início do dia "de" até o fim do dia "até", no horário local, convertido para UTC (como o Odoo guarda)
+        const corpo = {
+            action: "get_margins",
+            category_id: categoria || null,
+            date_from: dataUtcOdoo(new Date(dataDe + 'T00:00:00')),
+            date_to: dataUtcOdoo(new Date(dataAte + 'T23:59:59'))
+        };
+        const dataBR = iso => iso.split('-').reverse().join('/');
 
         status.innerText = "Calculando margens...";
 
@@ -2274,7 +2296,7 @@
             const moeda = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 });
             const cor = (valor, p) => valor < 0 ? '#bb0000' : (p < 30 ? '#c8630a' : '#0c5e2e');
             const cinza = 'var(--text-muted, #777)';
-            const periodoTxt = dias > 0 ? `vendas dos últimos ${dias} dias` : 'vendas de todo o histórico';
+            const periodoTxt = `vendas de ${dataBR(dataDe)} a ${dataBR(dataAte)}`;
             status.innerText = `${lista.length} produto(s) analisado(s) — ${periodoTxt}:`;
 
             results.innerHTML = lista.map(i => {
