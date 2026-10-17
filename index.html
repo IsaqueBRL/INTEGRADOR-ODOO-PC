@@ -52,10 +52,10 @@
         header p { color: #666; font-size: 14px; }
 
         .home-screen { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px 10px; gap: 20px; text-align: center; }
-        .menu-buttons { display: grid; grid-template-columns: repeat(3, 1fr); gap: 15px; width: 100%; max-width: 800px; }
-        .btn-menu { min-width: 0; padding: 18px 10px; background-color: var(--primary-color); color: white; border: none; border-radius: 10px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background 0.2s; }
+        .menu-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 15px; width: 100%; max-width: 800px; margin: 0 auto; }
+        .btn-menu { flex: 0 0 calc((100% - 30px) / 3); min-width: 0; padding: 18px 10px; background-color: var(--primary-color); color: white; border: none; border-radius: 10px; font-size: 16px; font-weight: 700; cursor: pointer; transition: background 0.2s; }
         .btn-menu:hover { background-color: var(--primary-hover); }
-        @media (max-width: 520px) { .menu-buttons { grid-template-columns: repeat(2, 1fr); } .btn-menu { font-size: 12px; padding: 18px 4px; } }
+        @media (max-width: 520px) { .btn-menu { flex: 0 0 calc((100% - 15px) / 2); font-size: 12px; padding: 18px 4px; } }
         #installCard { display: none; width: 100%; max-width: 440px; background: #fff; border: 1px solid var(--border-color); border-radius: 14px; padding: 14px 16px; box-shadow: 0 2px 8px rgba(0,0,0,.06); text-align: left; }
         #installCard.show { display: block; }
         #installCard .it { display: flex; align-items: center; gap: 12px; }
@@ -2392,8 +2392,8 @@
     }
 
     /* PRODUTOS MAIS VENDIDOS / PARADOS (só produtos de venda)
-       Período obrigatório (de/até). Modo "vendidos": quem vendeu no período, maior quantidade primeiro.
-       Modo "parados": quem NÃO vendeu nada no período, maior estoque primeiro (com o capital parado = estoque x custo). */
+       Período obrigatório (de/até). Modo "vendidos": quem vendeu no período. Modo "parados": quem NÃO vendeu nada no período.
+       Ordem inicial sempre pelo Valor gerado (maior primeiro); empate: quantidade vendida / estoque (com o capital parado = estoque x custo). */
     let vendidosReqId = 0;
 
     // Toda a conta fica aqui (sem acessar a tela), para poder ser testada.
@@ -2419,8 +2419,8 @@
         const itens = todos
             .filter(i => modo === 'parados' ? i.qtd <= 0 : i.qtd > 0)
             .sort((a, b) => modo === 'parados'
-                ? (b.estoque - a.estoque) || a.name.localeCompare(b.name, 'pt-BR')
-                : (b.qtd - a.qtd) || a.name.localeCompare(b.name, 'pt-BR'));
+                ? (b.liquido - a.liquido) || (b.estoque - a.estoque) || a.name.localeCompare(b.name, 'pt-BR')
+                : (b.liquido - a.liquido) || (b.qtd - a.qtd) || a.name.localeCompare(b.name, 'pt-BR'));
         return {
             itens,
             mediaMarkupEstoque: media(itens.filter(i => i.markupEstoque !== null).map(i => i.markupEstoque)),
@@ -2520,10 +2520,10 @@
             document.getElementById('vdTotalVendido').innerText = modo === 'parados' ? '-' : qtdTxt(r.totalVendido);
             document.getElementById('vdCapital').innerText = moeda(r.capitalParado);
 
-            // ordenação inicial: vendidos pela quantidade vendida; parados pela quantidade em estoque
+            // ordenação inicial: sempre pelo Valor gerado, do maior para o menor (nos parados, que não têm valor, desempata pelo estoque)
             document.querySelectorAll('#vendidosSection thead th').forEach((th, i) => {
                 th.classList.remove('sort-asc', 'sort-desc');
-                if (i === (modo === 'parados' ? 4 : 5)) th.classList.add('sort-desc');
+                if (i === 6) th.classList.add('sort-desc');
             });
 
             const periodoTxt = `${dataBR(dataDe)} a ${dataBR(dataAte)}`;
