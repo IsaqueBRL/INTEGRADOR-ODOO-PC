@@ -84,6 +84,9 @@
 
         .status { text-align: center; margin-bottom: 15px; font-size: 14px; color: #555; font-weight: 500; }
 
+        .copy-bar { display: flex; justify-content: flex-end; margin-bottom: 8px; }
+        .btn-copy-tabela { background-color: var(--edit-color); color: white; border: none; padding: 8px 14px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 13px; }
+        .btn-copy-tabela:hover { opacity: .9; }
         .table-container { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 8px; border: 1px solid var(--border-color); }
         table { width: 100%; border-collapse: collapse; min-width: 600px; text-align: left; }
         th { background-color: var(--primary-color); color: white; font-weight: 600; padding: 12px 14px; font-size: 14px; cursor: pointer; user-select: none; transition: background-color 0.2s; }
@@ -471,10 +474,6 @@
         </div>
 
         <div id="statusSuprimentos" class="status">Use os filtros e clique em Pesquisar. Sem nenhum filtro, mostra todos os suprimentos.</div>
-
-        <div id="suprimentosExport" style="display:none; justify-content:flex-end; gap:8px; margin-bottom:10px;">
-            <button type="button" class="btn-edit" style="padding:8px 14px; font-size:13px;" onclick="copiarTabelaSuprimentos()">Copiar tabela</button>
-        </div>
 
         <div class="table-container">
             <table>
@@ -1567,6 +1566,75 @@
         return String(nome).split('/')[0].trim();
     }
 
+    /* COPIAR TABELA: botão "Copiar tabela" acima de TODAS as tabelas do site.
+       Copia cabeçalho + linhas como estão na tela (respeita a ordenação e os filtros), sem as colunas de ação/botões.
+       Cola direto no Excel (Ctrl+V). */
+    function textoDaCelula(td) {
+        const sel = td.querySelector('select');
+        if (sel) return sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : '';
+        const inp = td.querySelector('input:not([type=hidden])');
+        if (inp) return inp.value;
+        return td.innerText;
+    }
+
+    async function copiarTabela(container) {
+        const table = container.querySelector('table');
+        if (!table) return;
+        const limpa = t => String(t == null ? '' : t).replace(/\s+/g, ' ').trim();
+
+        // colunas copiadas: as que têm título e não são "AÇÃO"
+        const ths = Array.from(table.querySelectorAll('thead tr:last-child th'));
+        const cols = [];
+        ths.forEach((th, i) => {
+            const t = limpa(th.textContent);
+            if (t && !/^a[çc][ãa]o$|^a[çc][õo]es$/i.test(t)) cols.push(i);
+        });
+        const cabecalho = cols.map(i => limpa(ths[i].textContent));
+
+        const linhas = [];
+        table.querySelectorAll('tbody tr, tfoot tr').forEach(tr => {
+            if (getComputedStyle(tr).display === 'none') return;
+            const tds = Array.from(tr.children);
+            if (tds.length < 2 && tds[0] && tds[0].colSpan > 1) return; // "Nenhum registro encontrado"
+            const l = cols.map(i => tds[i] ? limpa(textoDaCelula(tds[i])) : '');
+            if (l.some(v => v !== '')) linhas.push(l);
+        });
+
+        if (!linhas.length) { alert('Não há dados para copiar.'); return; }
+
+        const texto = [cabecalho, ...linhas].map(l => l.join('\t')).join('\n');
+        // versão HTML: números longos (código de barras) ficam como texto no Excel, sem virar 7,89E+12
+        const celula = (v, tag) => `<${tag}${/^\d{9,}$/.test(v) ? ' style="mso-number-format:\'\\@\'"' : ''}>${escHtml(v)}</${tag}>`;
+        const html = '<table><tr>' + cabecalho.map(v => celula(v, 'th')).join('') + '</tr>' +
+            linhas.map(l => '<tr>' + l.map(v => celula(v, 'td')).join('') + '</tr>').join('') + '</table>';
+
+        try {
+            await navigator.clipboard.write([new ClipboardItem({
+                'text/plain': new Blob([texto], { type: 'text/plain' }),
+                'text/html': new Blob([html], { type: 'text/html' })
+            })]);
+        } catch (e) {
+            try { await navigator.clipboard.writeText(texto); }
+            catch (e2) { alert('Não foi possível copiar a tabela.'); return; }
+        }
+        alert('Tabela copiada');
+    }
+
+    // coloca o botão acima de cada tabela (as tabelas são preenchidas depois; o botão lê o que está na tela na hora do clique)
+    document.querySelectorAll('.table-container').forEach(container => {
+        const bar = document.createElement('div');
+        bar.className = 'copy-bar';
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn-copy-tabela';
+        btn.textContent = 'Copiar tabela';
+        btn.addEventListener('click', () => copiarTabela(container));
+        bar.appendChild(btn);
+        // a tabela de saldos do Financeiro fica ao lado dos cartões: o botão vai acima do conjunto
+        const ref = container.closest('.fin-top') || container;
+        ref.parentNode.insertBefore(bar, ref);
+    });
+
     function mostrarTela(idTela) {
         // Saindo do Financeiro: zera os filtros e a lista do extrato
         const finEl = document.getElementById('financeiroSection');
@@ -1864,7 +1932,6 @@
         });
         document.getElementById('statusSuprimentos').innerText = "Use os filtros e clique em Pesquisar. Sem nenhum filtro, mostra todos os suprimentos.";
         document.getElementById('resultsSuprimentos').innerHTML = "";
-        document.getElementById('suprimentosExport').style.display = 'none';
         carregarUnidadesSuprimentos();
     }
 
@@ -1883,46 +1950,6 @@
         } catch (e) { /* a lista fica só com "Todas as unidades" */ }
     }
 
-    /* EXPORTAR: copia a tabela como está na tela (inclusive na ordem em que o usuário clicou para ordenar).
-       Números saem no formato brasileiro (vírgula), sem separador de milhar, para o Excel ler como número. */
-    const SUP_CABECALHO = ['Produto', 'Código de barras', 'Custo (R$)', 'Estoque', 'Unidade'];
-    function linhasSuprimentosExport() {
-        const num = n => String(Number(n || 0)).replace('.', ',');
-        return Array.from(document.querySelectorAll('#resultsSuprimentos tr[data-id]'))
-            .map(tr => suprimentosPorId[tr.dataset.id])
-            .filter(Boolean)
-            .map(p => [
-                p.name || '',
-                p.barcode || '',
-                num(p.standard_price),
-                num(p.qty_available),
-                Array.isArray(p.uom_id) ? p.uom_id[1] : ''
-            ]);
-    }
-
-    async function copiarTabelaSuprimentos() {
-        const linhas = linhasSuprimentosExport();
-        if (!linhas.length) { alert('Não há dados para copiar.'); return; }
-
-        const limpa = t => String(t).replace(/[\t\r\n]+/g, ' ');
-        const texto = [SUP_CABECALHO, ...linhas].map(l => l.map(limpa).join('\t')).join('\n');
-        // versão HTML: o Excel respeita o formato "texto" do código de barras (não vira 7,89E+12)
-        const celula = (v, i, tag) => `<${tag}${i === 1 && tag === 'td' ? ' style="mso-number-format:\'\\@\'"' : ''}>${escHtml(v)}</${tag}>`;
-        const html = '<table><tr>' + SUP_CABECALHO.map((v, i) => celula(v, i, 'th')).join('') + '</tr>' +
-            linhas.map(l => '<tr>' + l.map((v, i) => celula(v, i, 'td')).join('') + '</tr>').join('') + '</table>';
-
-        try {
-            await navigator.clipboard.write([new ClipboardItem({
-                'text/plain': new Blob([texto], { type: 'text/plain' }),
-                'text/html': new Blob([html], { type: 'text/html' })
-            })]);
-        } catch (e) {
-            try { await navigator.clipboard.writeText(texto); }
-            catch (e2) { alert('Não foi possível copiar a tabela.'); return; }
-        }
-        alert('Tabela copiada');
-    }
-
     async function buscarSuprimentos() {
         const query = lerFiltro("searchSuprimentosInput").trim();
         const barcode = lerFiltro("searchSuprimentosBarcode").trim();
@@ -1932,8 +1959,6 @@
         const reqId = ++suprimentosReqId;
 
         status.innerText = "Pesquisando suprimentos...";
-        const exportBar = document.getElementById('suprimentosExport');
-        exportBar.style.display = 'none';
 
         try {
             const response = await fetch('/api/odoo', {
@@ -1974,7 +1999,6 @@
                 `;
             });
             results.innerHTML = html;
-            exportBar.style.display = 'flex';
         } catch (e) {
             if (reqId !== suprimentosReqId) return;
             status.innerText = "Erro ao carregar suprimentos.";
