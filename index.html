@@ -470,6 +470,11 @@
 
         <div id="statusSuprimentos" class="status">Use os filtros e clique em Pesquisar. Sem nenhum filtro, mostra todos os suprimentos.</div>
 
+        <div id="suprimentosExport" style="display:none; justify-content:flex-end; gap:8px; margin-bottom:10px;">
+            <button type="button" class="btn-edit" style="padding:8px 14px; font-size:13px;" onclick="copiarTabelaSuprimentos()">Copiar tabela</button>
+            <button type="button" class="btn-edit" style="padding:8px 14px; font-size:13px; background-color:#2e7d32;" onclick="baixarCsvSuprimentos()">Baixar CSV (Excel)</button>
+        </div>
+
         <div class="table-container">
             <table>
                 <thead>
@@ -1858,6 +1863,68 @@
         });
         document.getElementById('statusSuprimentos').innerText = "Use os filtros e clique em Pesquisar. Sem nenhum filtro, mostra todos os suprimentos.";
         document.getElementById('resultsSuprimentos').innerHTML = "";
+        document.getElementById('suprimentosExport').style.display = 'none';
+    }
+
+    /* EXPORTAR: copia/baixa a tabela como está na tela (inclusive na ordem em que o usuário clicou para ordenar).
+       Números saem no formato brasileiro (vírgula), sem separador de milhar, para o Excel ler como número. */
+    const SUP_CABECALHO = ['Produto', 'Código de barras', 'Custo (R$)', 'Estoque', 'Unidade'];
+    function linhasSuprimentosExport() {
+        const num = n => String(Number(n || 0)).replace('.', ',');
+        return Array.from(document.querySelectorAll('#resultsSuprimentos tr[data-id]'))
+            .map(tr => suprimentosPorId[tr.dataset.id])
+            .filter(Boolean)
+            .map(p => [
+                p.name || '',
+                p.barcode || '',
+                num(p.standard_price),
+                num(p.qty_available),
+                Array.isArray(p.uom_id) ? p.uom_id[1] : ''
+            ]);
+    }
+
+    async function copiarTabelaSuprimentos() {
+        const linhas = linhasSuprimentosExport();
+        if (!linhas.length) { alert('Não há dados para copiar.'); return; }
+
+        const limpa = t => String(t).replace(/[\t\r\n]+/g, ' ');
+        const texto = [SUP_CABECALHO, ...linhas].map(l => l.map(limpa).join('\t')).join('\n');
+        // versão HTML: o Excel respeita o formato "texto" do código de barras (não vira 7,89E+12)
+        const celula = (v, i, tag) => `<${tag}${i === 1 && tag === 'td' ? ' style="mso-number-format:\'\\@\'"' : ''}>${escHtml(v)}</${tag}>`;
+        const html = '<table><tr>' + SUP_CABECALHO.map((v, i) => celula(v, i, 'th')).join('') + '</tr>' +
+            linhas.map(l => '<tr>' + l.map((v, i) => celula(v, i, 'td')).join('') + '</tr>').join('') + '</table>';
+
+        try {
+            await navigator.clipboard.write([new ClipboardItem({
+                'text/plain': new Blob([texto], { type: 'text/plain' }),
+                'text/html': new Blob([html], { type: 'text/html' })
+            })]);
+        } catch (e) {
+            try { await navigator.clipboard.writeText(texto); }
+            catch (e2) { alert('Não foi possível copiar automaticamente. Use o botão "Baixar CSV (Excel)".'); return; }
+        }
+        alert(`Tabela copiada (${linhas.length} linha(s)). Agora é só colar no Excel (Ctrl+V).`);
+    }
+
+    function baixarCsvSuprimentos() {
+        const linhas = linhasSuprimentosExport();
+        if (!linhas.length) { alert('Não há dados para baixar.'); return; }
+
+        const campo = (v, i) => {
+            const s = String(v).replace(/"/g, '""');
+            // código de barras como ="..." para o Excel manter todos os dígitos
+            return (i === 1 && s) ? `="${s}"` : `"${s}"`;
+        };
+        // ponto e vírgula + BOM: é o que o Excel em português abre direto, com acentos corretos
+        const csv = '\uFEFF' + [SUP_CABECALHO, ...linhas].map((l, n) => l.map((v, i) => n === 0 ? `"${v}"` : campo(v, i)).join(';')).join('\r\n');
+        const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'suprimentos.csv';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     async function buscarSuprimentos() {
@@ -1869,6 +1936,8 @@
         const reqId = ++suprimentosReqId;
 
         status.innerText = "Pesquisando suprimentos...";
+        const exportBar = document.getElementById('suprimentosExport');
+        exportBar.style.display = 'none';
 
         try {
             const response = await fetch('/api/odoo', {
@@ -1896,7 +1965,7 @@
                 suprimentosPorId[prod.id] = prod;
 
                 html += `
-                    <tr>
+                    <tr data-id="${prod.id}">
                         <td><strong>${escHtml(prod.name || '-')}</strong></td>
                         <td>${escHtml(prod.barcode || '-')}</td>
                         <td class="cost-col">${moedaCusto(prod.standard_price)}</td>
@@ -1909,6 +1978,7 @@
                 `;
             });
             results.innerHTML = html;
+            exportBar.style.display = 'flex';
         } catch (e) {
             if (reqId !== suprimentosReqId) return;
             status.innerText = "Erro ao carregar suprimentos.";
