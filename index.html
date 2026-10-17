@@ -464,7 +464,9 @@
         <div class="search-box">
             <input type="text" id="searchSuprimentosInput" placeholder="Digite o nome do produto...">
             <input type="text" id="searchSuprimentosBarcode" placeholder="Código de barras..." style="max-width:220px;">
-            <input type="text" id="searchSuprimentosUnidade" placeholder="Unidade (ex.: g, Units)..." style="max-width:180px;">
+            <select id="searchSuprimentosUnidade" title="Filtrar por unidade" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:200px;cursor:pointer;">
+                <option value="">Todas as unidades</option>
+            </select>
             <button onclick="pesquisar('suprimentos', buscarSuprimentos)">Pesquisar</button>
         </div>
 
@@ -472,7 +474,6 @@
 
         <div id="suprimentosExport" style="display:none; justify-content:flex-end; gap:8px; margin-bottom:10px;">
             <button type="button" class="btn-edit" style="padding:8px 14px; font-size:13px;" onclick="copiarTabelaSuprimentos()">Copiar tabela</button>
-            <button type="button" class="btn-edit" style="padding:8px 14px; font-size:13px; background-color:#2e7d32;" onclick="baixarCsvSuprimentos()">Baixar CSV (Excel)</button>
         </div>
 
         <div class="table-container">
@@ -1864,9 +1865,25 @@
         document.getElementById('statusSuprimentos').innerText = "Use os filtros e clique em Pesquisar. Sem nenhum filtro, mostra todos os suprimentos.";
         document.getElementById('resultsSuprimentos').innerHTML = "";
         document.getElementById('suprimentosExport').style.display = 'none';
+        carregarUnidadesSuprimentos();
     }
 
-    /* EXPORTAR: copia/baixa a tabela como está na tela (inclusive na ordem em que o usuário clicou para ordenar).
+    async function carregarUnidadesSuprimentos() {
+        const select = document.getElementById('searchSuprimentosUnidade');
+        try {
+            const response = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: "get_supply_units" })
+            });
+            const data = await response.json();
+            if (!data.result) return;
+            select.innerHTML = '<option value="">Todas as unidades</option>' +
+                data.result.map(u => `<option value="${u.id}">${escHtml(u.name)}</option>`).join('');
+        } catch (e) { /* a lista fica só com "Todas as unidades" */ }
+    }
+
+    /* EXPORTAR: copia a tabela como está na tela (inclusive na ordem em que o usuário clicou para ordenar).
        Números saem no formato brasileiro (vírgula), sem separador de milhar, para o Excel ler como número. */
     const SUP_CABECALHO = ['Produto', 'Código de barras', 'Custo (R$)', 'Estoque', 'Unidade'];
     function linhasSuprimentosExport() {
@@ -1901,30 +1918,9 @@
             })]);
         } catch (e) {
             try { await navigator.clipboard.writeText(texto); }
-            catch (e2) { alert('Não foi possível copiar automaticamente. Use o botão "Baixar CSV (Excel)".'); return; }
+            catch (e2) { alert('Não foi possível copiar a tabela.'); return; }
         }
-        alert(`Tabela copiada (${linhas.length} linha(s)). Agora é só colar no Excel (Ctrl+V).`);
-    }
-
-    function baixarCsvSuprimentos() {
-        const linhas = linhasSuprimentosExport();
-        if (!linhas.length) { alert('Não há dados para baixar.'); return; }
-
-        const campo = (v, i) => {
-            const s = String(v).replace(/"/g, '""');
-            // código de barras como ="..." para o Excel manter todos os dígitos
-            return (i === 1 && s) ? `="${s}"` : `"${s}"`;
-        };
-        // ponto e vírgula + BOM: é o que o Excel em português abre direto, com acentos corretos
-        const csv = '\uFEFF' + [SUP_CABECALHO, ...linhas].map((l, n) => l.map((v, i) => n === 0 ? `"${v}"` : campo(v, i)).join(';')).join('\r\n');
-        const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'suprimentos.csv';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        alert('Tabela copiada');
     }
 
     async function buscarSuprimentos() {
@@ -1943,7 +1939,7 @@
             const response = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: "get_supplies", query, barcode, uom })
+                body: JSON.stringify({ action: "get_supplies", query, barcode, uom_id: uom || null })
             });
 
             const data = await response.json();

@@ -2513,12 +2513,25 @@ export default async function handler(req, res) {
         // AÇÃO: SUPRIMENTOS (tela "Suprimentos": só produtos da categoria "MATÉRIA PRIMA", com ou sem "Vendas" marcado)
         // Devolve nome, código de barras, custo, estoque em mãos e a unidade de medida de cada produto.
         // A edição (nome e custo) usa a ação "update_product".
+        const SUPPLIES_DOMAIN = () => ["|", ["categ_id.complete_name", "ilike", "MATÉRIA PRIMA"], ["categ_id.complete_name", "ilike", "MATERIA PRIMA"]];
+
+        // AÇÃO: UNIDADES USADAS PELOS SUPRIMENTOS (alimenta a lista suspensa de unidade)
+        if (action === "get_supply_units") {
+            const units = await cached("supply_units", TTL_PRODUCTS, async () => {
+                const rows = await execute("product.template", "search_read", [SUPPLIES_DOMAIN()], { fields: ["uom_id"], limit: 500 });
+                const map = {};
+                (rows || []).forEach(r => { if (Array.isArray(r.uom_id)) map[r.uom_id[0]] = { id: r.uom_id[0], name: r.uom_id[1] }; });
+                return Object.values(map).sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+            });
+            return res.status(200).json({ result: units });
+        }
+
         if (action === "get_supplies") {
             const query = body.query || "";
-            const domain = ["|", ["categ_id.complete_name", "ilike", "MATÉRIA PRIMA"], ["categ_id.complete_name", "ilike", "MATERIA PRIMA"]];
+            const domain = SUPPLIES_DOMAIN();
             if (query) domain.push(["name", "ilike", query]);
             if (body.barcode) domain.push(["barcode", "ilike", String(body.barcode)]);
-            if (body.uom) domain.push(["uom_id.name", "ilike", String(body.uom)]);
+            if (Number(body.uom_id)) domain.push(["uom_id", "=", Number(body.uom_id)]);
             const result = await execute("product.template", "search_read", [domain], {
                 fields: ["id", "name", "barcode", "standard_price", "qty_available", "uom_id"],
                 order: "name asc",
