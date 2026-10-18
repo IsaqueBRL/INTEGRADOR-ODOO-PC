@@ -638,6 +638,7 @@
             <div class="rep-card mg"><div class="t">Média markup venda</div><div class="n" id="vdMarkupVenda">-</div></div>
             <div class="rep-card mg"><div class="t">Total em estoque</div><div class="n" id="vdTotalEstoque">-</div></div>
             <div class="rep-card mg"><div class="t" id="vdTituloVendido">Total vendido</div><div class="n" id="vdTotalVendido">-</div></div>
+            <div class="rep-card mg"><div class="t">Valor total</div><div class="n" id="vdValorTotal">-</div></div>
             <div class="rep-card neg"><div class="t">Capital parado</div><div class="n" id="vdCapital">-</div></div>
         </div>
 
@@ -2435,7 +2436,7 @@
 
     function limparTelaVendidos(mensagem) {
         ++vendidosReqId; // descarta qualquer busca anterior ainda em andamento
-        ['vdMarkupEstoque', 'vdMarkupVenda', 'vdTotalEstoque', 'vdTotalVendido', 'vdCapital'].forEach(id => { document.getElementById(id).innerText = '-'; });
+        ['vdMarkupEstoque', 'vdMarkupVenda', 'vdTotalEstoque', 'vdTotalVendido', 'vdValorTotal', 'vdCapital'].forEach(id => { document.getElementById(id).innerText = '-'; });
         document.getElementById('resultsVendidos').innerHTML = '';
         document.getElementById('statusVendidos').innerText = mensagem;
     }
@@ -2518,6 +2519,7 @@
             document.getElementById('vdMarkupVenda').innerText = modo === 'parados' ? '-' : num2(r.mediaMarkupVenda);
             document.getElementById('vdTotalEstoque').innerText = qtdTxt(r.totalEstoque);
             document.getElementById('vdTotalVendido').innerText = modo === 'parados' ? '-' : qtdTxt(r.totalVendido);
+            document.getElementById('vdValorTotal').innerText = modo === 'parados' ? '-' : moeda(r.totalValor);
             document.getElementById('vdCapital').innerText = moeda(r.capitalParado);
 
             // ordenação inicial: sempre pelo Valor gerado, do maior para o menor (nos parados, que não têm valor, desempata pelo estoque)
