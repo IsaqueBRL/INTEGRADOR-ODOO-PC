@@ -1298,7 +1298,7 @@
         const style = document.createElement('style');
         style.textContent = '@keyframes odooSpin{to{transform:rotate(360deg)}}';
         const overlay = document.createElement('div');
-        overlay.style.cssText = 'position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:rgba(255,255,255,.55);backdrop-filter:blur(1px);cursor:wait;';
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:rgba(255,255,255,.55);cursor:wait;';
         overlay.innerHTML = '<div style="width:56px;height:56px;border:6px solid #e3d6df;border-top-color:#714B67;border-radius:50%;animation:odooSpin .8s linear infinite;"></div><div style="font-weight:bold;color:#714B67;font-size:15px;text-shadow:0 0 6px #fff;">Carregando... aguarde</div>';
         document.addEventListener('DOMContentLoaded', () => { document.head.appendChild(style); document.body.appendChild(overlay); });
         let spinCount = 0, spinTimer = null;
@@ -1468,32 +1468,34 @@
         headers.forEach(h => h.classList.remove('sort-asc', 'sort-desc'));
         th.classList.add(isAscending ? 'sort-desc' : 'sort-asc');
 
-        rows.sort((rowA, rowB) => {
-            const cellA = rowA.children[colIndex] ? rowA.children[colIndex].innerText.trim() : '';
-            const cellB = rowB.children[colIndex] ? rowB.children[colIndex].innerText.trim() : '';
+        // O texto, o data-sort e o número de cada linha são lidos UMA vez (antes eram relidos a cada comparação,
+        // e innerText força o navegador a recalcular o layout: era o que deixava a ordenação pesada em listas grandes)
+        const chaves = rows.map(row => {
+            const td = row.children[colIndex];
+            const texto = td ? td.innerText.trim() : '';
+            return { row, texto, ds: td ? td.dataset.sort : undefined, num: parseValorVisual(texto) };
+        });
+        const collator = new Intl.Collator('pt-BR', { numeric: true, sensitivity: 'base' });
 
+        chaves.sort((A, B) => {
             // colunas de data guardam o valor ISO em data-sort (vazio = sem data, fica como o menor)
-            const dsA = rowA.children[colIndex] ? rowA.children[colIndex].dataset.sort : undefined;
-            const dsB = rowB.children[colIndex] ? rowB.children[colIndex].dataset.sort : undefined;
-            if (dsA !== undefined || dsB !== undefined) {
-                const a = dsA || '', b = dsB || '';
+            if (A.ds !== undefined || B.ds !== undefined) {
+                const a = A.ds || '', b = B.ds || '';
                 const cmp = a < b ? -1 : (a > b ? 1 : 0);
                 return isAscending ? -cmp : cmp;
             }
 
-            const numA = parseValorVisual(cellA);
-            const numB = parseValorVisual(cellB);
-
-            if (!isNaN(numA) && !isNaN(numB)) {
-                return isAscending ? numB - numA : numA - numB;
+            if (!isNaN(A.num) && !isNaN(B.num)) {
+                return isAscending ? B.num - A.num : A.num - B.num;
             }
 
-            return isAscending 
-                ? cellB.localeCompare(cellA, 'pt-BR', { numeric: true, sensitivity: 'base' })
-                : cellA.localeCompare(cellB, 'pt-BR', { numeric: true, sensitivity: 'base' });
+            return isAscending ? collator.compare(B.texto, A.texto) : collator.compare(A.texto, B.texto);
         });
 
-        rows.forEach(row => tbody.appendChild(row));
+        // reinsere tudo de uma vez (um único ajuste de layout em vez de um por linha)
+        const frag = document.createDocumentFragment();
+        chaves.forEach(k => frag.appendChild(k.row));
+        tbody.appendChild(frag);
     });
 
     function parseValorVisual(texto) {
@@ -1541,13 +1543,16 @@
     function itensDoSelectProduto(sel) {
         // na Transferência a lista vem do local de origem; na Venda, do armazém
         const lista = (sel.closest && sel.closest('#transferLinesBody')) ? availableTransferProducts : availableProducts;
-        return Array.from(sel.options).filter(o => o.value).map(o => {
-            const p = lista.find(x => String(x.id) === String(o.value));
-            const semEstoque = /⚠/.test(o.text);
-            const nome = p ? p.display_name : o.text.replace(/ ⚠.*$/, '').replace(/\s*\(-?[\d.,]+ un\)\s*$/, '');
-            const q = p && p.stock_qty !== undefined && p.stock_qty !== null ? Number(p.stock_qty) : null;
-            return { id: o.value, nome, qtd: q, semEstoque };
-        });
+        // índice por id montado uma vez (antes era um find() na lista inteira para cada opção: O(n²) com muitos produtos)
+        const porId = new Map(lista.map(p => [String(p.id), p]));
+        return Array.from(sel.options).filter(o => o.value).map(o => itemDaOpcaoProduto(o, porId.get(String(o.value))));
+    }
+
+    function itemDaOpcaoProduto(o, p) {
+        const semEstoque = /⚠/.test(o.text);
+        const nome = p ? p.display_name : o.text.replace(/ ⚠.*$/, '').replace(/\s*\(-?[\d.,]+ un\)\s*$/, '');
+        const q = p && p.stock_qty !== undefined && p.stock_qty !== null ? Number(p.stock_qty) : null;
+        return { id: o.value, nome, qtd: q, semEstoque };
     }
 
     // Coluna ESTOQUE da linha: estoque atual do produto escolhido, no local de estoque do pedido
@@ -1576,7 +1581,13 @@
         const btn = sel._ppBtn;
         if (!btn) return;
         btn.disabled = sel.disabled;
-        const it = itensDoSelectProduto(sel).find(i => String(i.id) === String(sel.value));
+        // só a opção escolhida interessa aqui (antes montava a lista inteira de produtos para cada linha do pedido)
+        const opt = sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex] : null;
+        let it = null;
+        if (opt && opt.value) {
+            const lista = (sel.closest && sel.closest('#transferLinesBody')) ? availableTransferProducts : availableProducts;
+            it = itemDaOpcaoProduto(opt, lista.find(x => String(x.id) === String(opt.value)));
+        }
         const escapa = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
         if (!it) {
             btn.innerHTML = '<span class="pp-name placeholder">Selecione um produto...</span>';
@@ -5152,7 +5163,9 @@
             const a = ra.children[col].dataset.sort || '', b = rb.children[col].dataset.sort || '';
             return a < b ? 1 : (a > b ? -1 : 0);
         });
-        rows.forEach(r => tbody.appendChild(r));
+        const frag = document.createDocumentFragment();
+        rows.forEach(r => frag.appendChild(r));
+        tbody.appendChild(frag);
     }
 
     // Odoo devolve datas em UTC ("YYYY-MM-DD HH:MM:SS"); mostra no horário local, ex.: 18/09/2026 14:40

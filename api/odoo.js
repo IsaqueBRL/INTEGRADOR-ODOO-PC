@@ -21,17 +21,26 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function rpc(service, method, args, tentativa = 0) {
     const leitura = service === "common" || (service === "object" && READ_METHODS.has(args && args[4]));
     let status = 0, text = "";
+    // Tempo limite: se o Odoo travar, devolve um erro claro antes de a Vercel matar a função (limite de 30 s),
+    // que fazia o site receber uma página de erro em HTML e parecer "travado".
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), leitura ? 22000 : 26000);
     try {
         const r = await fetch(ODOO_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ jsonrpc: "2.0", method: "call", params: { service, method, args }, id: Date.now() })
+            body: JSON.stringify({ jsonrpc: "2.0", method: "call", params: { service, method, args }, id: Date.now() }),
+            signal: ctrl.signal
         });
         status = r.status;
         text = await r.text();
     } catch (e) {
-        if (leitura && tentativa < 2) { await sleep(500 * (tentativa + 1)); return rpc(service, method, args, tentativa + 1); }
-        throw new Error("Não foi possível conectar ao Odoo: " + e.message);
+        const estourou = e && e.name === "AbortError";
+        // não repete quando estourou o tempo (repetir passaria do limite da função)
+        if (leitura && !estourou && tentativa < 2) { await sleep(500 * (tentativa + 1)); return rpc(service, method, args, tentativa + 1); }
+        throw new Error(estourou ? "O Odoo demorou demais para responder. Tente novamente em instantes." : "Não foi possível conectar ao Odoo: " + e.message);
+    } finally {
+        clearTimeout(timer);
     }
     try {
         return JSON.parse(text);
@@ -87,13 +96,16 @@ const lookups = {
 };
 
 // Contas de caixa/banco (mesmo critério da tela Financeiro), incluindo as de saldo zero
-async function getCashBankAccounts() {
-    const accounts = await execute("account.account", "search_read", [[["account_type", "in", ["asset_cash", "bank_and_cash"]]]], {
-        fields: ["id", "code", "name"],
-        order: "code asc",
-        limit: 200
+// (guardada por 1 min: era consultada de novo a cada pagamento/crédito/extrato; qualquer gravação limpa esse cache)
+function getCashBankAccounts() {
+    return cached("cash_accounts", 60 * 1000, async () => {
+        const accounts = await execute("account.account", "search_read", [[["account_type", "in", ["asset_cash", "bank_and_cash"]]]], {
+            fields: ["id", "code", "name"],
+            order: "code asc",
+            limit: 200
+        });
+        return accounts || [];
     });
-    return accounts || [];
 }
 
 // Contas "Banco e caixa" que estão ATIVAS (campo "Ativo" do plano de contas), em ordem alfabética
@@ -179,7 +191,11 @@ export default async function handler(req, res) {
     }
     const action = body.action || "get_products";
     // qualquer ação que grava algo limpa as listas em cache deste servidor
-    if (!/^(get_|search_)/.test(action)) _cache.clear();
+    // (mantém o cache da estrutura dos modelos "fields_*": ela não muda com uma gravação, e refazê-la deixava cada gravação mais lenta;
+    //  e as ações só de consulta, como a prévia de reversão, também não precisam limpar nada)
+    if (!/^(get_|search_|preview_)/.test(action)) {
+        for (const k of _cache.keys()) { if (!k.startsWith("fields_")) _cache.delete(k); }
+    }
 
     try {
         const uid = await getUid();
@@ -903,6 +919,10 @@ export default async function handler(req, res) {
             const { order_id, journal_id, amount, payment_date, invoice_date } = body;
             if (!order_id || !journal_id || !amount) {
                 return res.status(400).json({ error: "Campos obrigatórios não informados." });
+            }
+            // valor inválido (texto, negativo, zero) não pode seguir: antes dava "sucesso" sem registrar nada
+            if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) {
+                return res.status(400).json({ error: "Informe um valor de pagamento maior que zero." });
             }
 
             // Só aceita contas do tipo "Banco e caixa"
@@ -1839,7 +1859,9 @@ export default async function handler(req, res) {
             let criado = false;
             if (!pid) {
                 if (!nome) return res.status(400).json({ error: "Informe o nome do cliente." });
-                const achados = await execute("res.partner", "search_read", [[["name", "=ilike", nome]]], { fields: ["id", "name"], limit: 1 });
+                // % e _ digitados no nome são curingas no "=ilike": escapa para casar só o nome exato
+                const nomeExato = nome.replace(/[\\%_]/g, "\\$&");
+                const achados = await execute("res.partner", "search_read", [[["name", "=ilike", nomeExato]]], { fields: ["id", "name"], limit: 1 });
                 if (achados && achados.length > 0) { pid = achados[0].id; nome = achados[0].name; }
                 else {
                     if (operation === "remove") return res.status(400).json({ error: "Cliente não encontrado: não há crédito para retirar." });
@@ -2080,21 +2102,28 @@ export default async function handler(req, res) {
             const allInvoiceIds = [];
             (orders || []).forEach(o => (o.invoice_ids || []).forEach(id => allInvoiceIds.push(id)));
 
-            let invoiceMap = {};
-            if (allInvoiceIds.length > 0) {
-                const invoices = await execute("account.move", "search_read", [[["id", "in", allInvoiceIds]]], {
-                    fields: ["id", "payment_state", "state", "invoice_date_due"]
-                }).catch(() => []);
-                (invoices || []).forEach(inv => { invoiceMap[inv.id] = inv; });
-            }
-
             // Produtos e quantidades de cada pedido (telinha da coluna QUANTIDADE)
             const itensPorPedido = {};
             const orderIds = (orders || []).map(o => o.id);
+
+            // faturas e linhas só dependem dos pedidos: buscadas ao mesmo tempo (antes uma esperava a outra)
+            const [invoices, linhas] = await Promise.all([
+                allInvoiceIds.length > 0
+                    ? execute("account.move", "search_read", [[["id", "in", allInvoiceIds]]], {
+                        fields: ["id", "payment_state", "state", "invoice_date_due"]
+                    }).catch(() => [])
+                    : [],
+                orderIds.length > 0
+                    ? execute("sale.order.line", "search_read", [[["order_id", "in", orderIds], ["display_type", "=", false]]], {
+                        fields: ["order_id", "product_id", "product_uom_qty"]
+                    }).catch(() => [])
+                    : []
+            ]);
+
+            let invoiceMap = {};
+            (invoices || []).forEach(inv => { invoiceMap[inv.id] = inv; });
+
             if (orderIds.length > 0) {
-                const linhas = await execute("sale.order.line", "search_read", [[["order_id", "in", orderIds], ["display_type", "=", false]]], {
-                    fields: ["order_id", "product_id", "product_uom_qty"]
-                }).catch(() => []);
                 (linhas || []).forEach(l => {
                     const oid = Array.isArray(l.order_id) ? l.order_id[0] : l.order_id;
                     if (!itensPorPedido[oid]) itensPorPedido[oid] = [];
