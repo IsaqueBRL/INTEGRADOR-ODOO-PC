@@ -631,7 +631,7 @@
             </select>
             <button onclick="pesquisar('vendidos', buscarVendidos)">Pesquisar</button>
         </div>
-        <div class="rep-nota">Informe o período e clique em Pesquisar. Markup estoque = preço de tabela ÷ custo; markup venda = preço médio realmente recebido ÷ custo. Produtos sem custo ficam fora das médias de markup.</div>
+        <div class="rep-nota">Informe o período e clique em Pesquisar. Markup estoque = preço de tabela ÷ custo; markup venda = preço médio realmente recebido ÷ custo. Produtos sem custo ficam fora das médias de markup. Capital em estoque = estoque × custo dos produtos listados; no modo Parados (produtos sem nenhuma venda no período) esse valor é o capital parado.</div>
 
         <div class="rep-cards">
             <div class="rep-card mg"><div class="t">Média markup estoque</div><div class="n" id="vdMarkupEstoque">-</div></div>
@@ -639,7 +639,7 @@
             <div class="rep-card mg"><div class="t">Total em estoque</div><div class="n" id="vdTotalEstoque">-</div></div>
             <div class="rep-card mg"><div class="t" id="vdTituloVendido">Total vendido</div><div class="n" id="vdTotalVendido">-</div></div>
             <div class="rep-card mg"><div class="t">Valor total</div><div class="n" id="vdValorTotal">-</div></div>
-            <div class="rep-card neg"><div class="t">Capital parado</div><div class="n" id="vdCapital">-</div></div>
+            <div class="rep-card mg" id="vdCardCapital"><div class="t" id="vdTituloCapital">Capital em estoque</div><div class="n" id="vdCapital">-</div></div>
         </div>
 
         <div id="statusVendidos" class="status">Informe o período (data inicial e final) e clique em Pesquisar.</div>
@@ -655,7 +655,7 @@
                         <th>QTD. EM ESTOQUE</th>
                         <th>QTD. VENDIDA</th>
                         <th>VALOR GERADO</th>
-                        <th>CAPITAL PARADO</th>
+                        <th id="vdThCapital">CAPITAL EM ESTOQUE</th>
                     </tr>
                 </thead>
                 <tbody id="resultsVendidos"></tbody>
@@ -2475,6 +2475,15 @@
         };
     }
 
+    // "Capital parado" só faz sentido para produtos SEM venda (modo Parados). Em "Mais vendidos" o mesmo cálculo
+    // (estoque × custo) é o capital que está em estoque desses produtos, e não "parado".
+    function rotulosCapitalVendidos(modo) {
+        const parados = modo === 'parados';
+        document.getElementById('vdTituloCapital').innerText = parados ? 'Capital parado' : 'Capital em estoque';
+        document.getElementById('vdThCapital').innerText = parados ? 'CAPITAL PARADO' : 'CAPITAL EM ESTOQUE';
+        document.getElementById('vdCardCapital').className = 'rep-card ' + (parados ? 'neg' : 'mg');
+    }
+
     function limparTelaVendidos(mensagem) {
         ++vendidosReqId; // descarta qualquer busca anterior ainda em andamento
         ['vdMarkupEstoque', 'vdMarkupVenda', 'vdTotalEstoque', 'vdTotalVendido', 'vdValorTotal', 'vdCapital'].forEach(id => { document.getElementById(id).innerText = '-'; });
@@ -2490,6 +2499,7 @@
         });
         document.getElementById('vendidosModo').value = 'vendidos';
         delete filtrosAplicados['vendidosModo'];
+        rotulosCapitalVendidos('vendidos');
         limparTelaVendidos('Informe o período (data inicial e final) e clique em Pesquisar.');
         carregarCategoriasVendidos();
     }
@@ -2562,6 +2572,7 @@
             document.getElementById('vdTotalVendido').innerText = modo === 'parados' ? '-' : qtdTxt(r.totalVendido);
             document.getElementById('vdValorTotal').innerText = modo === 'parados' ? '-' : moeda(r.totalValor);
             document.getElementById('vdCapital').innerText = moeda(r.capitalParado);
+            rotulosCapitalVendidos(modo);
 
             // ordenação inicial: sempre pelo Valor gerado, do maior para o menor (nos parados, que não têm valor, desempata pelo estoque)
             document.querySelectorAll('#vendidosSection thead th').forEach((th, i) => {
@@ -4108,14 +4119,14 @@
                 return;
             }
 
-            container.innerHTML = '';
+            let htmlLista = '';
             let hasDraft = false;
             let draftPaymentId = null;
 
             data.payments.forEach(p => {
                 const isDraft = p.state === 'draft';
                 const currentJournalId = Array.isArray(p.journal_id) ? p.journal_id[0] : p.journal_id;
-                const journalName = Array.isArray(p.journal_id) ? p.journal_id[1] : '-';
+                const journalName = escHtml(Array.isArray(p.journal_id) ? p.journal_id[1] : '-');
 
                 if (isDraft) {
                     hasDraft = true;
@@ -4142,7 +4153,7 @@
                             </div>
                             <div style="grid-column: span 2;">
                                 <label>Data do Pagamento</label>
-                                <input type="date" id="editPayDate_${p.id}" value="${p.date || ''}">
+                                <input type="date" id="editPayDate_${p.id}" value="${escHtml(p.date || '')}">
                             </div>
                         </div>
                     `;
@@ -4151,7 +4162,7 @@
                         <div style="font-size: 13px; color: #555; margin-bottom: 10px;">
                             <div><strong>Valor:</strong> R$ ${(p.amount || 0).toFixed(2)}</div>
                             <div><strong>Diário/Conta:</strong> ${journalName}</div>
-                            <div><strong>Data:</strong> ${p.date || '-'}</div>
+                            <div><strong>Data:</strong> ${escHtml(p.date || '-')}</div>
                         </div>
                     `;
                 }
@@ -4163,10 +4174,10 @@
                     topActionHtml = `<button class="btn-save" style="padding: 6px 12px; font-size: 13px;" onclick="salvarELancarPagamentoProvisorio(${p.id})">Lançar</button>`;
                 }
 
-                container.innerHTML += `
+                htmlLista += `
                     <div class="payment-list-item">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                            <strong>${p.name || 'Pagamento'}</strong>
+                            <strong>${escHtml(p.name || 'Pagamento')}</strong>
                             <span class="status-badge ${isDraft ? 'status-draft' : 'status-sale'}">
                                 ${isDraft ? 'Provisório' : 'Pago'}
                             </span>
@@ -4178,6 +4189,7 @@
                     </div>
                 `;
             });
+            container.innerHTML = htmlLista;
 
             if (hasDraft && draftPaymentId) {
                 footerActions.innerHTML = `
@@ -4748,6 +4760,8 @@
                 buscarVendas();
             } else {
                 alert(data.error || 'Erro ao cancelar o pedido.');
+                // Se faturas já foram desfeitas, o estado mudou: atualiza a lista e fecha o pedido para não mostrar dados velhos
+                if (/ATENÇÃO/.test(data.error || '')) { fecharSaleModal(); buscarVendas(); }
             }
         } catch (e) {
             alert('Erro de conexão ao tentar cancelar o pedido.');
@@ -5290,7 +5304,9 @@
     }
 
     // Traz só os produtos que têm estoque no local de origem escolhido
+    let _origemReq = 0;
     async function carregarProdutosDaOrigem(locationId) {
+        const meuReq = ++_origemReq;
         if (!locationId) { availableTransferProducts = []; return false; }
         try {
             const res = await fetch('/api/odoo', {
@@ -5299,6 +5315,7 @@
                 body: JSON.stringify({ action: 'get_location_products', location_id: Number(locationId) })
             });
             const data = await res.json();
+            if (meuReq !== _origemReq) return false; // outra troca de origem aconteceu enquanto carregava
             if (!data.products) {
                 availableTransferProducts = [];
                 console.error('get_location_products:', data.error || data);
@@ -5635,6 +5652,10 @@
         if (!confirmar) return;
 
         const payload = coletarDadosTransferencia();
+        if (!payload.location_id || !payload.location_dest_id) { alert('Escolha o local de origem e o de destino.'); return; }
+        if (String(payload.location_id) === String(payload.location_dest_id)) { alert('Origem e destino não podem ser o mesmo local.'); return; }
+        if (!payload.lines.length) { alert('Adicione ao menos um produto à transferência.'); return; }
+        if (payload.lines.some(l => !(Number(l.qty) > 0))) { alert('Todas as quantidades precisam ser maiores que zero.'); return; }
         payload.action = 'update_transfer';
         payload.validate = true;
 
@@ -5906,10 +5927,13 @@ function gerarQr(texto) {
         if (!dados.url) { status('Digite o endereço do site de autoatendimento e clique em "Salvar" para gerar os QR Codes.'); return; }
         if (!dados.locais.length) { status('Nenhum local (armazém) encontrado no Odoo.'); return; }
         status(dados.locais.length + ' local(is). Cada QR abre o site já travado no local, sem opção de trocar.' + (dados.pix ? '' : ' Atenção: a chave Pix ainda não foi definida.'));
+        var falhas = 0;
         dados.locais.forEach(function (l) {
+            var cv;
+            try { cv = desenhar(l, 240); } catch (e) { falhas++; return; }
             var card = document.createElement('div');
             card.style.cssText = 'background:#fff;border:1px solid var(--border-color);border-radius:12px;padding:14px;text-align:center;';
-            var cv = desenhar(l, 240); cv.style.cssText = 'width:100%;height:auto;max-width:240px;';
+            cv.style.cssText = 'width:100%;height:auto;max-width:240px;';
             var tit = document.createElement('div'); tit.textContent = l.name; tit.style.cssText = 'font-weight:700;margin:8px 0;word-break:break-word;';
             var bt = document.createElement('div'); bt.style.cssText = 'display:flex;gap:8px;justify-content:center;flex-wrap:wrap;';
             var bc = document.createElement('button'); bc.className = 'btn-action'; bc.textContent = 'Copiar link';
@@ -5928,6 +5952,7 @@ function gerarQr(texto) {
             card.appendChild(cv); card.appendChild(tit); card.appendChild(bt);
             grid.appendChild(card);
         });
+        if (falhas) status(falhas + ' QR Code(s) não puderam ser gerados: o link ficou longo demais (máx. 213 caracteres). Use um endereço de site mais curto.', true);
     }
 
     window.abrirTelaQrCodes = async function () {
