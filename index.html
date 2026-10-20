@@ -1287,6 +1287,7 @@
         const cache = new Map();
         const inflight = new Map();
         const controllers = new Map();
+        const gravacoesEmAndamento = new Map();
         let pending = 0;
 
         const bar = document.createElement('div');
@@ -1383,9 +1384,21 @@
 
             // qualquer ação que grava algo invalida as listas guardadas (antes só 'update_product' fazia isso)
             const ehLeitura = /^(get_|search_)/.test(action);
-            if (!ehLeitura) cache.clear();
+            if (!ehLeitura) {
+                // clique duplo: a MESMA gravação (mesma ação e mesmos dados) ainda em andamento não é enviada de novo;
+                // quem clicou pela segunda vez recebe a resposta da primeira
+                const chave = opts.body;
+                if (gravacoesEmAndamento.has(chave)) return gravacoesEmAndamento.get(chave).then(mk);
+                cache.clear();
+                loadStart(action);
+                const pGravacao = fetchRobusto(url, opts, action)
+                    .then(async r => ({ text: await r.text(), status: r.status }))
+                    .finally(() => { gravacoesEmAndamento.delete(chave); cache.clear(); loadEnd(action); });
+                gravacoesEmAndamento.set(chave, pGravacao);
+                return pGravacao.then(mk);
+            }
             loadStart(action);
-            return fetchRobusto(url, opts, action).finally(() => { if (!ehLeitura) cache.clear(); loadEnd(action); });
+            return fetchRobusto(url, opts, action).finally(() => { loadEnd(action); });
         };
 
         // Pré-carga: acorda o servidor e deixa as listas de apoio prontas (Nova Venda / Pagar abrem na hora)
@@ -1408,6 +1421,8 @@
     function mostrarAlerta(mensagem, titulo = 'Aviso') {
         const modal = document.getElementById('customModal');
         if (!modal) return;
+        // um aviso que chega com uma confirmação aberta CANCELA a confirmação (antes o OK do aviso a confirmava sem o usuário querer)
+        if (customModalResolve) { customModalResolve(false); customModalResolve = null; }
         document.getElementById('customModalTitle').innerText = titulo;
         document.getElementById('customModalMessage').innerText = mensagem;
         document.getElementById('customModalFooter').innerHTML = `
@@ -1418,6 +1433,7 @@
 
     function mostrarConfirmacao(mensagem, titulo = 'Confirmação') {
         return new Promise((resolve) => {
+            if (customModalResolve) { customModalResolve(false); customModalResolve = null; } // confirmação anterior ainda aberta: cancela
             customModalResolve = resolve;
             const modal = document.getElementById('customModal');
             if (!modal) return resolve(false);
@@ -1485,9 +1501,12 @@
                 return isAscending ? -cmp : cmp;
             }
 
-            if (!isNaN(A.num) && !isNaN(B.num)) {
+            const aNum = !isNaN(A.num), bNum = !isNaN(B.num);
+            if (aNum && bNum) {
                 return isAscending ? B.num - A.num : A.num - B.num;
             }
+            // texto como "-" ou "Sem custo" vai sempre para o fim, em qualquer direção (antes a ordem variava entre cliques)
+            if (aNum !== bNum) return aNum ? -1 : 1;
 
             return isAscending ? collator.compare(B.texto, A.texto) : collator.compare(A.texto, B.texto);
         });
@@ -1500,13 +1519,12 @@
 
     function parseValorVisual(texto) {
         if (!texto) return NaN;
-        let limpo = texto.replace('un', '').trim();
-        if (limpo.includes('R$')) {
-            limpo = limpo.replace(/[R$\s.]/g, '').replace(',', '.');
-            return parseFloat(limpo);
-        }
-        const numeroDireto = limpo.replace(',', '.');
-        return isNaN(numeroDireto) ? NaN : parseFloat(numeroDireto);
+        // tira moeda, unidades (un, un/dia, dias) e %, e aceita sinal negativo (margens negativas ordenavam como positivas)
+        let t = String(texto).replace(/\u00a0/g, ' ').replace(/R\$/g, '').trim()
+            .replace(/\s*(un\/dia|un\.?|dias|dia|%)\s*$/i, '').replace(/\s+/g, '').replace(/^[\u2212\u2013]/, '-');
+        // formato brasileiro: com vírgula, os pontos são separador de milhar ("1.234,56")
+        if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.');
+        return /^[-+]?\d+(\.\d+)?$/.test(t) ? parseFloat(t) : NaN;
     }
 
     /* ------------------------------------------------------------
@@ -1678,9 +1696,11 @@
     }
 
     // Traz só os produtos que têm estoque no armazém escolhido
+    let armazemReqId = 0;
     async function carregarProdutosDoArmazem() {
         const wh = document.getElementById('saleWarehouse').value;
         if (!wh) return false;
+        const req = ++armazemReqId;
         try {
             const res = await fetch('/api/odoo', {
                 method: 'POST',
@@ -1688,6 +1708,7 @@
                 body: JSON.stringify({ action: 'get_warehouse_products', warehouse_id: Number(wh) })
             });
             const data = await res.json();
+            if (req !== armazemReqId) return false; // o armazém foi trocado de novo: esta resposta é do anterior
             if (!data.products) {
                 // não cai mais na lista geral: avisa o erro e deixa a lista vazia
                 availableProducts = [];
@@ -1698,6 +1719,7 @@
             availableProducts = data.products;
             return true;
         } catch (e) {
+            if (req !== armazemReqId) return false;
             availableProducts = [];
             console.error('get_warehouse_products:', e);
             alert('Não foi possível carregar os produtos deste local: ' + (e.message || 'erro de conexão'));
@@ -1712,11 +1734,12 @@
         if (!ok) return;
 
         let semEstoque = 0;
+        const opcoesArmazem = '<option value="">Selecione um produto...</option>' +
+            availableProducts.map(p => `<option value="${p.id}">${labelProduto(p)}</option>`).join('');
         document.querySelectorAll('#saleLinesBody .line-product').forEach(sel => {
             const cur = sel.value;
             const curText = (sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : '').replace(/ ⚠.*$/, '');
-            let opts = '<option value="">Selecione um produto...</option>' +
-                availableProducts.map(p => `<option value="${p.id}">${labelProduto(p)}</option>`).join('');
+            let opts = opcoesArmazem;
             if (cur && !availableProducts.some(p => String(p.id) === cur)) {
                 opts += `<option value="${cur}">${escHtml(curText)} ⚠ sem estoque neste local</option>`;
                 semEstoque++;
@@ -2065,6 +2088,13 @@
         const categ_id = document.getElementById('editProdCategory').value;
         const btn = document.getElementById('btnSalvarProduto');
 
+        // preço ou custo vazio/negativo era gravado como veio e distorcia Margem e Mais Vendidos
+        const nPreco = Number(list_price), nCusto = Number(standard_price);
+        if (!name.trim() || String(list_price).trim() === '' || String(standard_price).trim() === '' || !(nPreco >= 0) || !(nCusto >= 0)) {
+            alert('Informe o nome, o preço e o custo do produto (valores a partir de zero).');
+            return;
+        }
+
         btn.innerText = "Salvando...";
         btn.disabled = true;
 
@@ -2075,7 +2105,7 @@
                 body: JSON.stringify({
                     action: 'update_product',
                     product_id: id,
-                    name,
+                    name: name.trim(),
                     list_price,
                     standard_price,
                     categ_id: categ_id || null
@@ -2163,7 +2193,7 @@
             const lista = data.result.map(p => {
                 const mediaDia = p.sold / dias;
                 // sem venda no período não dá para prever ruptura: fica sem "dias" e vai para o fim da lista
-                const diasReal = mediaDia > 0 ? p.qty_available / mediaDia : null;
+                const diasReal = mediaDia > 0 ? Math.max(0, p.qty_available / mediaDia) : null; // estoque negativo = 0 dias (não "-2 dias")
                 let nivel, texto, cor;
                 if (diasReal === null) { nivel = 3; texto = p.qty_available > 0 ? '- Sem venda no período' : '- Sem estoque e sem venda'; cor = '#777'; }
                 else if (diasReal <= 3) { nivel = 0; texto = '🔴 Urgente'; cor = '#bb0000'; }
@@ -2320,8 +2350,8 @@
         const corpo = {
             action: "get_margins",
             category_id: categoria || null,
-            date_from: dataUtcOdoo(new Date(dataDe + 'T00:00:00')),
-            date_to: dataUtcOdoo(new Date(dataAte + 'T23:59:59'))
+            date_from: dataUtcOdoo(new Date(dataDe + 'T00:00:00-04:00')),
+            date_to: dataUtcOdoo(new Date(dataAte + 'T23:59:59-04:00'))
         };
         const dataBR = iso => iso.split('-').reverse().join('/');
 
@@ -2503,8 +2533,8 @@
         const corpo = {
             action: "get_best_sellers",
             category_id: categoria || null,
-            date_from: dataUtcOdoo(new Date(dataDe + 'T00:00:00')),
-            date_to: dataUtcOdoo(new Date(dataAte + 'T23:59:59'))
+            date_from: dataUtcOdoo(new Date(dataDe + 'T00:00:00-04:00')),
+            date_to: dataUtcOdoo(new Date(dataAte + 'T23:59:59-04:00'))
         };
         const dataBR = iso => iso.split('-').reverse().join('/');
         status.innerText = "Calculando...";
@@ -2794,7 +2824,7 @@
         clearTimeout(ajusteBuscaTimer);
         const dd = document.getElementById('ajusteDropdown');
         const q = document.getElementById('ajusteBusca').value.trim();
-        if (!q) { dd.style.display = 'none'; return; }
+        if (!q) { ++ajusteBuscaReq; dd.style.display = 'none'; return; } // invalida busca em andamento (não reabre a lista)
         ajusteBuscaTimer = setTimeout(async () => {
             const reqId = ++ajusteBuscaReq;
             try {
@@ -2834,7 +2864,7 @@
             <div style="display:flex; align-items:center; gap:8px; border:1px solid var(--border-color); border-radius:8px; padding:8px;">
                 <div style="flex:1; min-width:0;">
                     <div style="font-weight:600; font-size:13px;">${escAjuste(i.name)}</div>
-                    <div style="font-size:12px; color:#777;">Atual: ${i.atual === null ? '...' : i.atual} un</div>
+                    <div style="font-size:12px; color:#777;">Atual: <span class="aj-atual">${i.atual === null ? '...' : i.atual}</span> un</div>
                 </div>
                 <input type="number" min="0" step="any" placeholder="Nova qtd." value="${escAjuste(i.nova)}" style="width:110px;" oninput="ajusteItens.find(x => x.id === ${i.id}).nova = this.value">
                 <button class="btn-remove-line" onclick="removerItemAjuste(${i.id})">×</button>
@@ -2848,14 +2878,24 @@
             renderItensAjuste();
             return;
         }
+        const req = ++ajusteQtdReq;
         try {
             const resp = await fetch('/api/odoo', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'get_stock_quantities', location_id: loc, product_ids: ajusteItens.map(i => i.id) }) });
             const data = await resp.json();
+            if (req !== ajusteQtdReq) return; // o local mudou de novo: esta resposta é do local antigo
             const mapa = data.result || {};
             ajusteItens.forEach(i => { i.atual = mapa[i.id] ?? 0; });
         } catch (e) { /* mostra "..." */ }
-        renderItensAjuste();
+        if (req !== ajusteQtdReq) return;
+        // atualiza só o número "Atual" (refazer a lista inteira tirava o cursor do campo "Nova qtd." durante a digitação)
+        const spans = document.querySelectorAll('#ajusteItens .aj-atual');
+        if (spans.length === ajusteItens.length) {
+            spans.forEach((sp, k) => { sp.textContent = ajusteItens[k].atual === null ? '...' : ajusteItens[k].atual; });
+        } else {
+            renderItensAjuste();
+        }
     }
+    let ajusteQtdReq = 0;
 
     async function salvarAjusteEstoque() {
         const loc = document.getElementById('ajusteLocal').value;
@@ -3201,8 +3241,11 @@
                 return;
             }
 
-            status.innerText = `${data.result.length} pedido(s) encontrado(s):`;
+            status.innerText = data.truncated
+                ? `Mostrando os ${data.result.length} pedidos mais recentes (há outros: use o período, o local ou o nome para refinar):`
+                : `${data.result.length} pedido(s) encontrado(s):`;
             let html = "";
+            Object.keys(vendasItens).forEach(k => { delete vendasItens[k]; });
 
             data.result.forEach(sale => {
                 const clientName = Array.isArray(sale.partner_id) ? sale.partner_id[1] : "-";
@@ -3233,6 +3276,7 @@
             results.innerHTML = html;
             ordenarPorDataDesc('resultsVendas');
         } catch (e) {
+            if (reqId !== vendasReqId) return; // erro de uma busca antiga: não apaga o resultado da busca nova
             status.innerText = "Erro ao carregar pedidos.";
             results.innerHTML = `<tr><td colspan="9" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
@@ -4253,6 +4297,7 @@
             return res.json();
         };
         let feitos = 0, excedenteTotal = 0;
+        const lotePagamento = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
         try {
             if (cred > 0.004) {
                 const d = await post({ action: 'apply_customer_credit', invoice_id: currentInvoiceId, amount: cred, invoice_date: hojeISO() });
@@ -4261,7 +4306,7 @@
             }
             for (let i = 0; i < linhas.length; i++) {
                 const l = linhas[i];
-                const d = await post({ action: 'register_payment', order_id: currentInvoiceId, journal_id: l.conta, amount: l.valor, payment_date, invoice_date: hojeISO() });
+                const d = await post({ action: 'register_payment', order_id: currentInvoiceId, journal_id: l.conta, amount: l.valor, payment_date, invoice_date: hojeISO(), request_id: lotePagamento + '-' + i });
                 if (!d.success) {
                     alert((d.error || 'Erro ao registrar pagamento.') + (feitos ? '\n\nOs pagamentos anteriores (' + feitos + ') já foram registrados.' : ''));
                     fecharModalPagamento();
@@ -4605,8 +4650,13 @@
             alert('Selecione o local de estoque (armazém) de onde sairá o produto.');
             return false;
         }
-        if (coletarLinhasDoFormulario().length === 0) {
+        const linhasForm = coletarLinhasDoFormulario();
+        if (linhasForm.length === 0) {
             alert('Adicione ao menos um produto ao pedido.');
+            return false;
+        }
+        if (linhasForm.some(l => !(Number(l.qty) > 0))) {
+            alert('Informe a quantidade de cada produto (maior que zero).');
             return false;
         }
         return true;
@@ -5311,7 +5361,7 @@
     // Data local do campo (YYYY-MM-DD) -> formato UTC do Odoo (YYYY-MM-DD HH:MM:SS)
     function dataLocalParaOdoo(valor, fimDoDia) {
         if (!valor) return '';
-        const d = new Date(valor + (fimDoDia ? 'T23:59:59' : 'T00:00:00'));
+        const d = new Date(valor + (fimDoDia ? 'T23:59:59-04:00' : 'T00:00:00-04:00'));
         if (isNaN(d.getTime())) return '';
         return d.toISOString().slice(0, 19).replace('T', ' ');
     }

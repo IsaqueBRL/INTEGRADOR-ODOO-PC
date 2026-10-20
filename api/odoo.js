@@ -161,6 +161,104 @@ async function onlyExistingFields(model, vals) {
     }
 }
 
+// ---------------------------------------------------------------------
+// SOMAS FEITAS PELO PRÓPRIO ODOO (read_group)
+// Antes, os relatórios baixavam até 50.000 linhas de venda (ou 10.000 registros de estoque) e somavam aqui em JavaScript.
+// Agora o Odoo devolve a soma já pronta, uma linha por produto. Se por algum motivo ele recusar (versão diferente,
+// campo sem agrupamento), cai automaticamente no jeito antigo, então nada deixa de funcionar.
+// ---------------------------------------------------------------------
+const idDe = v => Array.isArray(v) ? v[0] : v;
+const arred2 = n => Math.round((Number(n) + Number.EPSILON) * 100) / 100;
+// "hoje" no horário de Manaus (UTC-4, sem horário de verão). O servidor roda em UTC: depois das 20h em Manaus
+// a data UTC já é a do dia seguinte, e itens que vencem hoje passariam a contar como vencidos.
+const hojeManaus = () => new Date(Date.now() - 4 * 3600 * 1000).toISOString().slice(0, 10);
+
+// Confere quantidade, preço e desconto vindos do painel (antes aceitava texto, quantidade negativa e desconto acima de 100%)
+function erroNasLinhas(linhas, exigirPreco) {
+    for (const l of (linhas || [])) {
+        if (!l) continue;
+        const qtd = String(l.qty == null ? "" : l.qty).trim() === "" ? NaN : Number(l.qty);
+        if (!Number.isFinite(qtd) || qtd < 0) return "Quantidade inválida em um dos produtos.";
+        if (exigirPreco && !Number.isFinite(Number(l.price))) return "Preço inválido em um dos produtos.";
+        const desc = (l.discount == null || l.discount === "") ? 0 : Number(l.discount);
+        if (!Number.isFinite(desc) || desc < 0 || desc > 100) return "Desconto inválido (use de 0% a 100%).";
+    }
+    return null;
+}
+
+// Pagamentos já recebidos pelo servidor (identificador enviado pelo painel): se o MESMO envio chegar de novo
+// (clique duplo, reenvio), devolve o resultado anterior em vez de lançar o pagamento outra vez.
+const _pagamentosRecentes = new Map();
+function limparPagamentosRecentes() {
+    if (_pagamentosRecentes.size < 200) return;
+    const agora = Date.now();
+    for (const [k, v] of _pagamentosRecentes) { if (v.exp < agora) _pagamentosRecentes.delete(k); }
+}
+
+// Quantidade e valor líquido vendidos, somados por TEMPLATE de produto: { qty: {tid: n}, net: {tid: n} }
+async function vendasPorTemplate(lineDomain) {
+    try {
+        // agrupa por variante (product_id é gravado no banco; product_template_id não) e depois junta no template
+        const grupos = await execute("sale.order.line", "read_group",
+            [lineDomain, ["product_uom_qty:sum", "price_subtotal:sum"], ["product_id"]], { lazy: false });
+        const pids = (grupos || []).map(g => idDe(g.product_id)).filter(Boolean);
+        const prods = pids.length
+            ? await execute("product.product", "read", [pids], { fields: ["product_tmpl_id"], context: { active_test: false } })
+            : [];
+        const tmplDe = {};
+        (prods || []).forEach(p => { tmplDe[p.id] = idDe(p.product_tmpl_id); });
+        const qty = {}, net = {};
+        (grupos || []).forEach(g => {
+            const tid = tmplDe[idDe(g.product_id)];
+            if (!tid) return;
+            qty[tid] = (qty[tid] || 0) + (Number(g.product_uom_qty) || 0);
+            net[tid] = (net[tid] || 0) + (Number(g.price_subtotal) || 0);
+        });
+        return { qty, net };
+    } catch (e) {
+        console.warn("read_group de vendas indisponível, usando a busca linha a linha:", e.message);
+    }
+    const lines = await execute("sale.order.line", "search_read", [lineDomain], {
+        fields: ["product_template_id", "product_uom_qty", "price_subtotal"],
+        limit: 50000
+    });
+    const qty = {}, net = {};
+    (lines || []).forEach(l => {
+        const tid = idDe(l.product_template_id);
+        if (!tid) return;
+        qty[tid] = (qty[tid] || 0) + (Number(l.product_uom_qty) || 0);
+        net[tid] = (net[tid] || 0) + (Number(l.price_subtotal) || 0);
+    });
+    return { qty, net };
+}
+
+// Estoque físico de um local (e sublocais) somado por produto: { [product_id]: quantidade }
+async function estoquePorProduto(rootLoc) {
+    const domain = [
+        ["location_id", "child_of", rootLoc],
+        ["location_id.usage", "=", "internal"],
+        ["quantity", ">", 0]
+    ];
+    const porProduto = {};
+    try {
+        const grupos = await execute("stock.quant", "read_group", [domain, ["quantity:sum"], ["product_id"]], { lazy: false });
+        (grupos || []).forEach(g => {
+            const pid = idDe(g.product_id);
+            if (pid) porProduto[pid] = (porProduto[pid] || 0) + (Number(g.quantity) || 0);
+        });
+        return porProduto;
+    } catch (e) {
+        console.warn("read_group de estoque indisponível, usando a busca registro a registro:", e.message);
+    }
+    for (const k of Object.keys(porProduto)) delete porProduto[k];
+    const quants = await execute("stock.quant", "search_read", [domain], { fields: ["product_id", "quantity"], limit: 10000 });
+    (quants || []).forEach(q => {
+        const pid = idDe(q.product_id);
+        if (pid) porProduto[pid] = (porProduto[pid] || 0) + q.quantity;
+    });
+    return porProduto;
+}
+
 // mais tempo para a função na Vercel (a 1ª chamada "fria" + login no Odoo + consultas podia estourar o limite e devolver uma página HTML de erro)
 export const config = { maxDuration: 30 };
 
@@ -763,7 +861,10 @@ export default async function handler(req, res) {
 
             const writeData = {};
             if (journal_id) writeData.journal_id = Number(journal_id);
-            if (amount !== undefined) writeData.amount = Number(amount);
+            if (amount !== undefined) {
+                if (!Number.isFinite(Number(amount)) || Number(amount) <= 0) return res.status(400).json({ error: "Informe um valor de pagamento maior que zero." });
+                writeData.amount = Number(amount);
+            }
             if (date) writeData.date = date;
 
             await execute("account.payment", "write", [[Number(payment_id)], writeData]);
@@ -932,12 +1033,28 @@ export default async function handler(req, res) {
             }
 
             const invoiceId = Number(order_id);
+
+            // Mesmo envio repetido (clique duplo, reenvio da tela): não lança o pagamento de novo
+            const rid = typeof body.request_id === "string" ? body.request_id.trim().slice(0, 80) : "";
+            const chavePag = rid ? "pag:" + invoiceId + ":" + rid : "";
+            if (chavePag) {
+                const anterior = _pagamentosRecentes.get(chavePag);
+                if (anterior && anterior.exp > Date.now()) {
+                    if (anterior.estado === "ok") return res.status(200).json({ ...anterior.resposta, repetido: true });
+                    return res.status(409).json({ error: "Este pagamento já está sendo processado. Aguarde alguns segundos e confira a venda." });
+                }
+                limparPagamentosRecentes();
+                _pagamentosRecentes.set(chavePag, { estado: "processando", exp: Date.now() + 120000 });
+            }
+            const liberarPagamento = () => { if (chavePag) _pagamentosRecentes.delete(chavePag); };
+
             let lancadaAgora = false;
             let excedente = 0;
             try {
                 try {
                     lancadaAgora = await lancarFaturaSeProvisoria(invoiceId, invoice_date);
                 } catch (e) {
+                    liberarPagamento();
                     if (e.status) return res.status(e.status).json({ error: e.message });
                     throw e;
                 }
@@ -975,6 +1092,7 @@ export default async function handler(req, res) {
                     await anotarPagamento(pid, obs);
                 }
             } catch (e) {
+                liberarPagamento();
                 if (lancadaAgora) {
                     try { await execute("account.move", "button_draft", [[invoiceId]]); } catch (e2) { /* melhor esforço */ }
                 }
@@ -983,14 +1101,36 @@ export default async function handler(req, res) {
 
             // Fatura paga => tranca a entrega do pedido
             try { await sincronizarBloqueioEntregas(invoiceId); } catch (e) { /* melhor esforço */ }
-            return res.status(200).json({ success: true, excess: excedente });
+            const respostaPag = { success: true, excess: excedente };
+            if (chavePag) _pagamentosRecentes.set(chavePag, { estado: "ok", resposta: respostaPag, exp: Date.now() + 120000 });
+            return res.status(200).json(respostaPag);
         }
 
         // AÇÃO: CONTAS A RECEBER / A PAGAR (soma do "valor devido" das faturas e contas não canceladas e não pagas)
         if (action === "get_receivable_payable") {
-            const hoje = body.today || new Date().toISOString().slice(0, 10);
+            const hoje = (typeof body.today === "string" && /^\d{4}-\d{2}-\d{2}$/.test(body.today)) ? body.today : hojeManaus();
 
-            const somar = async (tipos, tiposNegativos) => {
+            // Versão rápida: o Odoo soma por tipo de documento e devolve só alguns números (antes baixava até 5.000 faturas)
+            const somarRapido = async (tipos, tiposNegativos) => {
+                const base = [["move_type", "in", tipos], ["state", "!=", "cancel"], ["payment_state", "!=", "paid"]];
+                const sinal = t => tiposNegativos.includes(t) ? -1 : 1;
+                const somaPorTipo = async (extra) => {
+                    const grupos = await execute("account.move", "read_group", [[...base, ...extra], ["amount_residual:sum"], ["move_type"]], { lazy: false });
+                    return (grupos || []).reduce((a, g) => a + sinal(g.move_type) * (Number(g.amount_residual) || 0), 0);
+                };
+                const tiposPositivos = tipos.filter(t => !tiposNegativos.includes(t));
+                const [total, vencido, qtdGrupos] = await Promise.all([
+                    somaPorTipo([]),
+                    somaPorTipo([["invoice_date_due", "<", hoje]]),
+                    // documentos que contam como "em aberto": os de valor positivo (créditos/devoluções não entram na contagem)
+                    execute("account.move", "read_group", [[...base, ["move_type", "in", tiposPositivos], ["amount_residual", ">", 0]], ["amount_residual:sum"], ["move_type"]], { lazy: false })
+                ]);
+                const qtd = (qtdGrupos || []).reduce((a, g) => a + (Number(g.__count) || 0), 0);
+                return { total: arred2(total), vencido: arred2(vencido), qtd };
+            };
+
+            // Versão antiga (reserva): baixa as faturas e soma aqui
+            const somarLegado = async (tipos, tiposNegativos) => {
                 const docs = await execute("account.move", "search_read", [[
                     ["move_type", "in", tipos],
                     ["state", "!=", "cancel"],
@@ -1007,6 +1147,10 @@ export default async function handler(req, res) {
                 return { total: Math.round(total * 100) / 100, vencido: Math.round(vencido * 100) / 100, qtd };
             };
 
+            const somar = (tipos, neg) => somarRapido(tipos, neg).catch(e => {
+                console.warn("read_group de contas a receber/pagar indisponível, usando a busca antiga:", e.message);
+                return somarLegado(tipos, neg);
+            });
             const [receber, pagar] = await Promise.all([
                 somar(["out_invoice", "out_refund", "out_receipt"], ["out_refund"]),
                 somar(["in_invoice", "in_refund", "in_receipt"], ["in_refund"])
@@ -1108,12 +1252,12 @@ export default async function handler(req, res) {
 
         // AÇÃO: DADOS DE APOIO PARA MONTAR UM NOVO PEDIDO DE VENDA (CONDIÇÕES DE PAGAMENTO, PRODUTOS, ARMAZÉNS)
         if (action === "get_sale_form_data") {
-            const [paymentTerms, products, warehouses] = await Promise.all([
+            // (sem a lista de todos os produtos: o painel carrega os produtos do armazém escolhido em seguida)
+            const [paymentTerms, warehouses] = await Promise.all([
                 lookups.paymentTerms().catch(() => []),
-                lookups.saleProducts().catch(() => []),
                 lookups.warehouses().catch(() => [])
             ]);
-            return res.status(200).json({ payment_terms: paymentTerms || [], products: products || [], warehouses: warehouses || [] });
+            return res.status(200).json({ payment_terms: paymentTerms || [], products: [], warehouses: warehouses || [] });
         }
 
         // AÇÃO: DADOS DOS QR CODES (um por armazém). O código de cada local é calculado aqui com a QR_SECRET;
@@ -1170,17 +1314,7 @@ export default async function handler(req, res) {
             const rootLoc = Array.isArray(wh.lot_stock_id) ? wh.lot_stock_id[0] : wh.view_location_id[0];
 
             // estoque físico do armazém (locais internos dele e sublocais), somado por produto
-            const quants = await execute("stock.quant", "search_read", [[
-                ["location_id", "child_of", rootLoc],
-                ["location_id.usage", "=", "internal"],
-                ["quantity", ">", 0]
-            ]], { fields: ["product_id", "quantity"], limit: 10000 });
-
-            const qtyByProduct = {};
-            (quants || []).forEach(q => {
-                if (!Array.isArray(q.product_id)) return;
-                qtyByProduct[q.product_id[0]] = (qtyByProduct[q.product_id[0]] || 0) + q.quantity;
-            });
+            const qtyByProduct = await estoquePorProduto(rootLoc);
             const ids = Object.keys(qtyByProduct).map(Number);
             if (ids.length === 0) return res.status(200).json({ products: [] });
 
@@ -1246,6 +1380,7 @@ export default async function handler(req, res) {
             // Pagamentos e crédito usados nas faturas do pedido voltam para o cliente como crédito
             let creditoDevolvido = 0;
             const avisosCredito = [];
+            let faturasDesfeitas = 0;
             try {
                 const pedF = await execute("sale.order", "read", [[oid]], { fields: ["invoice_ids"] });
                 const idsF = (pedF && pedF[0] && pedF[0].invoice_ids) || [];
@@ -1261,6 +1396,7 @@ export default async function handler(req, res) {
                             }
                             await execute("account.move", "button_draft", [[f.id]]);
                             await execute("account.move", "button_cancel", [[f.id]]);
+                            faturasDesfeitas++;
                         } catch (e) {
                             avisosCredito.push("Não foi possível desfazer o pagamento da fatura " + f.name + ": " + e.message);
                         }
@@ -1280,6 +1416,12 @@ export default async function handler(req, res) {
                 // se não deu para cancelar, devolve o pedido ao estado bloqueado em que estava
                 if (estavaBloqueado) {
                     await execute("sale.order", "action_lock", [[oid]]).catch(() => {});
+                }
+                // as faturas já foram desfeitas antes deste passo: avisa com clareza o que ficou pela metade
+                if (faturasDesfeitas > 0) {
+                    throw new Error(e.message + " ATENÇÃO: o pedido NÃO foi cancelado, mas " + faturasDesfeitas + " fatura(s) dele já foram canceladas"
+                        + (creditoDevolvido > 0.004 ? " e R$ " + creditoDevolvido.toFixed(2).replace(".", ",") + " foram devolvidos como crédito do cliente" : "")
+                        + ". Confira o pedido no Odoo.");
                 }
                 throw e;
             }
@@ -1446,6 +1588,8 @@ export default async function handler(req, res) {
             if (!partner_id) return res.status(400).json({ error: "Selecione um cliente para o pedido." });
             const validLines = (lines || []).filter(l => l.product_id);
             if (validLines.length === 0) return res.status(400).json({ error: "Adicione ao menos um produto ao pedido." });
+            const erroLinhas = erroNasLinhas(validLines, true);
+            if (erroLinhas) return res.status(400).json({ error: erroLinhas });
 
             let orderId = order_id ? Number(order_id) : null;
 
@@ -1612,6 +1756,9 @@ export default async function handler(req, res) {
             const { order_id, lines, removed_line_ids, order_date, due_date } = body;
             if (!order_id) return res.status(400).json({ error: "ID do pedido é obrigatório." });
             const oid = Number(order_id);
+            const comProduto = (lines || []).filter(l => l && l.product_id);
+            const erroLinhasUp = erroNasLinhas(comProduto.filter(l => !l.id), true) || erroNasLinhas(comProduto.filter(l => l.id), false);
+            if (erroLinhasUp) return res.status(400).json({ error: erroLinhasUp });
 
             // linhas atuais do pedido: só escreve quantidade nas linhas que realmente mudaram
             const atuais = await execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], { fields: ["id", "product_uom_qty", "qty_delivered", "discount"] });
@@ -1812,6 +1959,13 @@ export default async function handler(req, res) {
         if (action === "update_invoice_detail") {
             const { invoice_id, invoice_date, due_date, lines } = body;
             if (!invoice_id) return res.status(400).json({ error: "ID da fatura é obrigatório." });
+            // como diz o título desta ação: só enquanto a fatura estiver em rascunho (Provisória)
+            const faturaAtual = await execute("account.move", "read", [[Number(invoice_id)]], { fields: ["state", "move_type"] });
+            if (!faturaAtual || !faturaAtual[0]) return res.status(404).json({ error: "Fatura não encontrada." });
+            if (faturaAtual[0].state !== "draft") return res.status(400).json({ error: "Só é possível alterar uma fatura enquanto ela estiver Provisória (rascunho)." });
+            if ((lines || []).some(l => l && l.id && (!Number.isFinite(Number(l.discount || 0)) || Number(l.discount || 0) < 0 || Number(l.discount || 0) > 100))) {
+                return res.status(400).json({ error: "Desconto inválido (use de 0% a 100%)." });
+            }
 
             const moveVals = {};
             if (invoice_date) moveVals.invoice_date = invoice_date;
@@ -2005,7 +2159,7 @@ export default async function handler(req, res) {
         // AÇÃO: AJUSTAR ESTOQUE (define a nova quantidade de cada produto em um local)
         if (action === "adjust_stock") {
             const locId = Number(body.location_id) || 0;
-            const itens = (body.items || []).filter(i => i && i.product_id && i.quantity !== "" && i.quantity !== null && !isNaN(Number(i.quantity)));
+            const itens = (body.items || []).filter(i => i && i.product_id && String(i.quantity == null ? "" : i.quantity).trim() !== "" && Number.isFinite(Number(i.quantity)));
             if (!locId) return res.status(400).json({ error: "Escolha o local do estoque." });
             if (itens.length === 0) return res.status(400).json({ error: "Informe a nova quantidade dos produtos." });
             if (itens.some(i => Number(i.quantity) < 0)) return res.status(400).json({ error: "A nova quantidade não pode ser negativa." });
@@ -2024,7 +2178,7 @@ export default async function handler(req, res) {
                 const nova = Number(it.quantity);
                 try {
                     const antes = await lerQtd(pid);
-                    if (antes === nova) { resultados.push({ product_id: pid, anterior: antes, nova, alterado: false }); continue; }
+                    if (Math.abs(antes - nova) < 0.0005) { resultados.push({ product_id: pid, anterior: antes, nova, alterado: false }); continue; }
 
                     try {
                         // mesmo caminho da tela de Inventário do Odoo: grava e aplica na hora
@@ -2043,7 +2197,7 @@ export default async function handler(req, res) {
                     }
 
                     const depois = await lerQtd(pid);
-                    if (depois !== nova) {
+                    if (Math.abs(depois - nova) >= 0.0005) {
                         erros.push("O produto " + pid + " ficou com " + depois + " em vez de " + nova + ". Confira no Odoo.");
                     }
                     resultados.push({ product_id: pid, anterior: antes, nova: depois, alterado: true });
@@ -2080,73 +2234,63 @@ export default async function handler(req, res) {
                 const estados = [...new Set(statusSel.flatMap(s => statusGroups[s]))];
                 domain.push(['state', 'in', estados]);
             }
-            // Se só foram pedidos "Pago" e/ou "Parcialmente Pago", já restringe aos pedidos com essas faturas
-            // (primeiro acha as faturas e depois os pedidos ligados a elas, evitando buscar por caminho em campo calculado)
-            if (statusSel.length > 0 && statusSel.every(s => s === 'paid' || s === 'partial')) {
-                const estadosPag = [];
-                if (statusSel.includes('paid')) estadosPag.push('paid', 'in_payment');
-                if (statusSel.includes('partial')) estadosPag.push('partial');
-                const faturasPag = await execute("account.move", "search_read", [[["move_type", "=", "out_invoice"], ["state", "!=", "cancel"], ["payment_state", "in", estadosPag]]], { fields: ["id"], order: "id desc", limit: 1000 }).catch(() => []);
-                if (!faturasPag || faturasPag.length === 0) return res.status(200).json({ result: [] });
-                domain.push(['invoice_ids', 'in', faturasPag.map(m => m.id)]);
-            }
+            // Filtros de pagamento (Pago / Parcial / Confirmado não pago) dependem das faturas de cada pedido.
+            // Antes: pré-buscava só as 1.000 faturas mais recentes (pedidos antigos sumiam e o período era ignorado).
+            // Agora: busca os pedidos já com período, local e nome aplicados e calcula o pagamento de cada um aqui.
             const filtraPorPagamento = statusSel.some(s => s === 'paid' || s === 'sale' || s === 'partial');
+            const LIMITE_LISTA = 100;
+            const LIMITE_BUSCA = filtraPorPagamento ? 1000 : LIMITE_LISTA;
 
             const orders = await execute("sale.order", "search_read", [domain], {
                 fields: ["id", "name", "partner_id", "amount_total", "state", "invoice_status", "invoice_ids", "warehouse_id", "date_order"],
                 order: "id desc",
-                limit: filtraPorPagamento ? 300 : 100
+                limit: LIMITE_BUSCA
             });
 
             // Busca em lote o status de pagamento das faturas ligadas a cada pedido
             const allInvoiceIds = [];
             (orders || []).forEach(o => (o.invoice_ids || []).forEach(id => allInvoiceIds.push(id)));
-
-            // Produtos e quantidades de cada pedido (telinha da coluna QUANTIDADE)
-            const itensPorPedido = {};
             const orderIds = (orders || []).map(o => o.id);
 
-            // faturas e linhas só dependem dos pedidos: buscadas ao mesmo tempo (antes uma esperava a outra)
-            const [invoices, linhas] = await Promise.all([
+            // Produtos e quantidades (telinha da coluna QUANTIDADE): só enfeite, então uma falha aqui não derruba a lista
+            const buscarLinhas = ids => ids.length > 0
+                ? execute("sale.order.line", "search_read", [[["order_id", "in", ids], ["display_type", "=", false]]], {
+                    fields: ["order_id", "product_id", "product_uom_qty"]
+                }).catch(() => [])
+                : Promise.resolve([]);
+
+            // Faturas: SEM engolir erro (antes, uma falha momentânea virava "tudo não faturado" e a lista saía errada).
+            // Sem filtro de pagamento a lista é pequena e as linhas vêm junto; com filtro, só as dos pedidos que sobrarem.
+            const [invoices, linhasJuntas] = await Promise.all([
                 allInvoiceIds.length > 0
                     ? execute("account.move", "search_read", [[["id", "in", allInvoiceIds]]], {
                         fields: ["id", "payment_state", "state", "invoice_date_due"]
-                    }).catch(() => [])
-                    : [],
-                orderIds.length > 0
-                    ? execute("sale.order.line", "search_read", [[["order_id", "in", orderIds], ["display_type", "=", false]]], {
-                        fields: ["order_id", "product_id", "product_uom_qty"]
-                    }).catch(() => [])
-                    : []
+                    })
+                    : Promise.resolve([]),
+                filtraPorPagamento ? Promise.resolve(null) : buscarLinhas(orderIds)
             ]);
 
             let invoiceMap = {};
             (invoices || []).forEach(inv => { invoiceMap[inv.id] = inv; });
 
-            if (orderIds.length > 0) {
-                (linhas || []).forEach(l => {
-                    const oid = Array.isArray(l.order_id) ? l.order_id[0] : l.order_id;
-                    if (!itensPorPedido[oid]) itensPorPedido[oid] = [];
-                    itensPorPedido[oid].push({ name: Array.isArray(l.product_id) ? l.product_id[1] : "-", qty: l.product_uom_qty });
-                });
-            }
-
-            const result = (orders || []).map(o => {
+            const filtrados = (orders || []).map(o => {
                 const invs = (o.invoice_ids || []).map(id => invoiceMap[id]).filter(Boolean);
+                // fatura cancelada não conta para o pagamento (antes um pedido com uma fatura cancelada e outra paga aparecia como "não pago")
+                const vivas = invs.filter(i => i.state !== 'cancel');
                 let paymentSummary = "nao_faturado";
-                if (invs.length > 0) {
-                    const allPaid = invs.every(i => i.payment_state === 'paid' || i.payment_state === 'in_payment');
-                    const temParcial = invs.some(i => i.state !== 'cancel' && i.payment_state === 'partial');
+                if (vivas.length > 0) {
+                    const allPaid = vivas.every(i => i.payment_state === 'paid' || i.payment_state === 'in_payment');
+                    const temParcial = vivas.some(i => i.payment_state === 'partial');
                     paymentSummary = allPaid ? "pago" : (temParcial ? "parcial" : "nao_pago");
                 }
                 // Vencimento = data de vencimento da fatura (ignora canceladas): a mais próxima entre as não pagas;
                 // se todas estiverem pagas, a mais recente
-                const ativas = invs.filter(i => i.state !== 'cancel' && i.invoice_date_due);
+                const ativas = vivas.filter(i => i.invoice_date_due);
                 const abertas = ativas.filter(i => !(i.payment_state === 'paid' || i.payment_state === 'in_payment'));
                 let dueDate = null;
                 if (abertas.length > 0) dueDate = abertas.map(i => i.invoice_date_due).sort()[0];
                 else if (ativas.length > 0) dueDate = ativas.map(i => i.invoice_date_due).sort().pop();
-                return { ...o, payment_summary: paymentSummary, due_date: dueDate, items: itensPorPedido[o.id] || [] };
+                return { ...o, payment_summary: paymentSummary, due_date: dueDate, items: [] };
             }).filter(o => {
                 if (statusSel.length === 0) return true;
                 // o pedido entra se casar com QUALQUER um dos status escolhidos
@@ -2159,9 +2303,22 @@ export default async function handler(req, res) {
                     if (s === 'sale') return confirmado && o.payment_summary !== 'pago' && o.payment_summary !== 'parcial';
                     return false;
                 });
-            }).slice(0, 100);
+            });
 
-            return res.status(200).json({ result });
+            // avisa o painel quando há mais pedidos do que os mostrados (antes cortava em silêncio)
+            const truncated = (orders || []).length >= LIMITE_BUSCA || filtrados.length > LIMITE_LISTA;
+            const result = filtrados.slice(0, LIMITE_LISTA);
+
+            const linhas = linhasJuntas || await buscarLinhas(result.map(o => o.id));
+            const itensPorPedido = {};
+            (linhas || []).forEach(l => {
+                const oid = Array.isArray(l.order_id) ? l.order_id[0] : l.order_id;
+                if (!itensPorPedido[oid]) itensPorPedido[oid] = [];
+                itensPorPedido[oid].push({ name: Array.isArray(l.product_id) ? l.product_id[1] : "-", qty: l.product_uom_qty });
+            });
+            result.forEach(o => { o.items = itensPorPedido[o.id] || []; });
+
+            return res.status(200).json({ result, truncated });
         }
 
         // AÇÃO: DETALHES DE UM PEDIDO DE VENDA
@@ -2171,7 +2328,9 @@ export default async function handler(req, res) {
 
             // Tudo que não depende do resultado do pedido já sai em paralelo.
             // Listas de apoio vêm do cache; a lista de parceiros foi removida (o site não a usa aqui).
-            const [orders, lines, paymentTerms, products, warehouses] = await Promise.all([
+            // (a lista com TODOS os produtos vendáveis não vem mais aqui: o painel já a substitui pelos produtos do armazém
+            //  escolhido, via get_warehouse_products, e as linhas do pedido trazem o próprio produto)
+            const [orders, lines, paymentTerms, warehouses] = await Promise.all([
                 execute("sale.order", "search_read", [[["id", "=", oid]]], {
                     fields: ["id", "name", "partner_id", "payment_term_id", "order_line", "state", "amount_total", "warehouse_id", "invoice_ids", "invoice_status", "validity_date", "date_order"]
                 }),
@@ -2179,7 +2338,6 @@ export default async function handler(req, res) {
                     fields: ["id", "product_id", "product_uom_qty", "price_unit", "discount", "price_subtotal"]
                 }),
                 lookups.paymentTerms().catch(() => []),
-                lookups.saleProducts().catch(() => []),
                 lookups.warehouses().catch(() => [])
             ]);
             if (!orders || orders.length === 0) return res.status(404).json({ error: "Pedido de venda não encontrado." });
@@ -2197,7 +2355,7 @@ export default async function handler(req, res) {
                 ? await execute("account.move", "search_read", [[["id", "in", order.invoice_ids]]], { fields: ["id", "name", "state", "payment_state", "amount_total", "amount_residual", "invoice_date_due"] })
                 : [];
 
-            return res.status(200).json({ order, lines: linhasPedido, payment_terms: paymentTerms || [], products: products || [], warehouses: warehouses || [], invoices: invoices || [] });
+            return res.status(200).json({ order, lines: linhasPedido, payment_terms: paymentTerms || [], products: [], warehouses: warehouses || [], invoices: invoices || [] });
         }
 
         // AÇÃO: BUSCAR LOCAIS DE ESTOQUE INTERNOS (PARA TRANSFERÊNCIAS)
@@ -2212,17 +2370,7 @@ export default async function handler(req, res) {
             if (!locId) return res.status(400).json({ error: "Local de origem é obrigatório." });
 
             // estoque físico do local escolhido (e sublocais), somado por produto
-            const quants = await execute("stock.quant", "search_read", [[
-                ["location_id", "child_of", locId],
-                ["location_id.usage", "=", "internal"],
-                ["quantity", ">", 0]
-            ]], { fields: ["product_id", "quantity"], limit: 10000 });
-
-            const qtyByProduct = {};
-            (quants || []).forEach(q => {
-                if (!Array.isArray(q.product_id)) return;
-                qtyByProduct[q.product_id[0]] = (qtyByProduct[q.product_id[0]] || 0) + q.quantity;
-            });
+            const qtyByProduct = await estoquePorProduto(locId);
             const ids = Object.keys(qtyByProduct).map(Number);
             if (ids.length === 0) return res.status(200).json({ products: [] });
 
@@ -2582,29 +2730,23 @@ export default async function handler(req, res) {
             ];
             if (categoryId) prodDomain.push(["categ_id", "child_of", categoryId]);
 
-            const products = await execute("product.template", "search_read", [prodDomain], {
-                fields: ["id", "name", "qty_available", "categ_id"],
-                order: "name asc",
-                limit: 1000
-            });
-
             const lineDomain = [
                 ["display_type", "=", false],
                 ["order_id.state", "in", ["sale", "done"]]
             ];
             if (body.date_from) lineDomain.push(["order_id.date_order", ">=", body.date_from]);
             if (body.date_to) lineDomain.push(["order_id.date_order", "<=", body.date_to]);
-            const lines = await execute("sale.order.line", "search_read", [lineDomain], {
-                fields: ["product_template_id", "product_uom_qty"],
-                limit: 20000
-            });
 
-            const soldByTemplate = {};
-            (lines || []).forEach(l => {
-                const tid = Array.isArray(l.product_template_id) ? l.product_template_id[0] : l.product_template_id;
-                if (!tid) return;
-                soldByTemplate[tid] = (soldByTemplate[tid] || 0) + (Number(l.product_uom_qty) || 0);
-            });
+            // produtos e vendas são independentes: buscados ao mesmo tempo, e as vendas já vêm somadas pelo Odoo
+            const [products, vendas] = await Promise.all([
+                execute("product.template", "search_read", [prodDomain], {
+                    fields: ["id", "name", "qty_available", "categ_id"],
+                    order: "name asc",
+                    limit: 1000
+                }),
+                vendasPorTemplate(lineDomain)
+            ]);
+            const soldByTemplate = vendas.qty;
 
             const result = (products || []).map(p => ({
                 id: p.id,
@@ -2630,31 +2772,23 @@ export default async function handler(req, res) {
             ];
             if (categoryId) prodDomain.push(["categ_id", "child_of", categoryId]);
 
-            const products = await execute("product.template", "search_read", [prodDomain], {
-                fields: ["id", "name", "categ_id", "list_price", "standard_price"],
-                order: "name asc",
-                limit: 1000
-            });
-
             const lineDomain = [
                 ["display_type", "=", false],
                 ["order_id.state", "in", ["sale", "done"]]
             ];
             if (body.date_from) lineDomain.push(["order_id.date_order", ">=", body.date_from]);
             if (body.date_to) lineDomain.push(["order_id.date_order", "<=", body.date_to]);
-            const lines = await execute("sale.order.line", "search_read", [lineDomain], {
-                fields: ["product_template_id", "product_uom_qty", "price_subtotal"],
-                limit: 50000
-            });
 
-            const qtyByTemplate = {};
-            const netByTemplate = {};
-            (lines || []).forEach(l => {
-                const tid = Array.isArray(l.product_template_id) ? l.product_template_id[0] : l.product_template_id;
-                if (!tid) return;
-                qtyByTemplate[tid] = (qtyByTemplate[tid] || 0) + (Number(l.product_uom_qty) || 0);
-                netByTemplate[tid] = (netByTemplate[tid] || 0) + (Number(l.price_subtotal) || 0);
-            });
+            const [products, vendas] = await Promise.all([
+                execute("product.template", "search_read", [prodDomain], {
+                    fields: ["id", "name", "categ_id", "list_price", "standard_price"],
+                    order: "name asc",
+                    limit: 1000
+                }),
+                vendasPorTemplate(lineDomain)
+            ]);
+            const qtyByTemplate = vendas.qty;
+            const netByTemplate = vendas.net;
 
             const result = (products || []).map(p => ({
                 id: p.id,
@@ -2688,26 +2822,18 @@ export default async function handler(req, res) {
             ];
             if (body.date_from) lineDomain.push(["order_id.date_order", ">=", body.date_from]);
             if (body.date_to) lineDomain.push(["order_id.date_order", "<=", body.date_to]);
-            const lines = await execute("sale.order.line", "search_read", [lineDomain], {
-                fields: ["product_template_id", "product_uom_qty", "price_subtotal"],
-                limit: 50000
-            });
-
-            const qtyByTemplate = {};
-            const netByTemplate = {};
-            (lines || []).forEach(l => {
-                const tid = Array.isArray(l.product_template_id) ? l.product_template_id[0] : l.product_template_id;
-                if (!tid) return;
-                qtyByTemplate[tid] = (qtyByTemplate[tid] || 0) + (Number(l.product_uom_qty) || 0);
-                netByTemplate[tid] = (netByTemplate[tid] || 0) + (Number(l.price_subtotal) || 0);
-            });
-            const soldIds = Object.keys(qtyByTemplate).map(Number);
-
             const fields = ["id", "name", "categ_id", "list_price", "standard_price", "qty_available"];
-            // ativos (catálogo atual) + arquivados que venderam no período
-            const active = await execute("product.template", "search_read", [baseDomain], {
-                fields, order: "name asc", limit: 1000
-            });
+            // vendas (já somadas pelo Odoo) e catálogo ativo são independentes: buscados ao mesmo tempo
+            const [vendas, active] = await Promise.all([
+                vendasPorTemplate(lineDomain),
+                execute("product.template", "search_read", [baseDomain], {
+                    fields, order: "name asc", limit: 1000
+                })
+            ]);
+            const qtyByTemplate = vendas.qty;
+            const netByTemplate = vendas.net;
+            const soldIds = Object.keys(qtyByTemplate).map(Number);
+            // (arquivados que venderam no período entram abaixo)
             const known = new Set((active || []).map(p => p.id));
             const missing = soldIds.filter(id => !known.has(id));
             let archived = [];
