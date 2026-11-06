@@ -3056,7 +3056,9 @@
        FILTRO COM VÁRIAS OPÇÕES (caixas de seleção)
        O valor fica num <input hidden> com os valores separados por vírgula (ex.: "3,5"),
        então lerFiltro()/pesquisar() continuam funcionando como nos outros filtros.
-       "Todos ..." é exclusivo: marcar ele desmarca os outros e vice-versa.
+       "Todos ..." reflete o estado das demais caixas: marcar "Todos" marca todas; desmarcar
+       uma caixa com "Todos" ativo tira "Todos" e mantém as outras marcadas; marcar manualmente
+       todas as caixas também ativa "Todos".
        ------------------------------------------------------------ */
     const MS = {};
 
@@ -3089,27 +3091,40 @@
         const wrap = hidden.closest('.ms');
         const btn = wrap.querySelector('.ms-btn');
         const panel = wrap.querySelector('.ms-panel');
-        const marcados = [...m.sel];
-        hidden.value = marcados.join(',');
+        const todosAtivo = m.sel.has('all');
+        const marcados = todosAtivo ? [] : [...m.sel];
+        hidden.value = todosAtivo ? 'all' : marcados.join(',');
 
         let texto;
-        if (marcados.length === 0) texto = m.placeholder;
-        else if (m.sel.has('all')) texto = m.todosLabel;
+        if (todosAtivo) texto = m.todosLabel;
+        else if (marcados.length === 0) texto = m.placeholder;
         else if (marcados.length === 1) texto = (m.opcoes.find(o => o.value === marcados[0]) || {}).label || marcados[0];
         else texto = marcados.length + ' selecionados';
-        btn.className = 'ms-btn' + (marcados.length === 0 ? ' vazio' : '');
+        const vazio = !todosAtivo && marcados.length === 0;
+        btn.className = 'ms-btn' + (vazio ? ' vazio' : '');
         btn.innerHTML = `<span class="ms-txt">${msEsc(texto)}</span>`;
 
+        // Quando "Todos" está ativo, todas as caixinhas individuais aparecem marcadas também.
         panel.innerHTML =
-            `<label class="ms-item todos"><input type="checkbox" value="all" ${m.sel.has('all') ? 'checked' : ''}> <span>${msEsc(m.todosLabel)}</span></label>` +
-            m.opcoes.map(o => `<label class="ms-item"><input type="checkbox" value="${msEsc(o.value)}" ${m.sel.has(o.value) ? 'checked' : ''}> <span>${msEsc(o.label)}</span></label>`).join('');
+            `<label class="ms-item todos"><input type="checkbox" value="all" ${todosAtivo ? 'checked' : ''}> <span>${msEsc(m.todosLabel)}</span></label>` +
+            m.opcoes.map(o => `<label class="ms-item"><input type="checkbox" value="${msEsc(o.value)}" ${(todosAtivo || m.sel.has(o.value)) ? 'checked' : ''}> <span>${msEsc(o.label)}</span></label>`).join('');
         panel.querySelectorAll('input[type="checkbox"]').forEach(chk => {
             chk.addEventListener('change', () => {
-                if (chk.checked) {
-                    if (chk.value === 'all') m.sel = new Set(['all']);
-                    else { m.sel.delete('all'); m.sel.add(chk.value); }
-                } else {
+                if (chk.value === 'all') {
+                    // marcar "Todos" seleciona tudo; desmarcar "Todos" limpa tudo
+                    m.sel = chk.checked ? new Set(['all']) : new Set();
+                } else if (todosAtivo) {
+                    // estava no modo "Todos": desmarcar um item sai desse modo
+                    // mantendo todos os outros itens marcados
+                    m.sel = new Set(m.opcoes.map(o => o.value));
                     m.sel.delete(chk.value);
+                } else {
+                    if (chk.checked) m.sel.add(chk.value);
+                    else m.sel.delete(chk.value);
+                    // se todos os itens ficaram marcados individualmente, assume o estado "Todos"
+                    if (m.opcoes.length > 0 && m.opcoes.every(o => m.sel.has(o.value))) {
+                        m.sel = new Set(['all']);
+                    }
                 }
                 msRender(id);
                 panel.classList.add('open'); // continua aberto para marcar mais opções
