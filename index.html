@@ -671,9 +671,11 @@
         </div>
 
         <div class="search-box">
-            <input type="text" id="searchEstoqueInput" placeholder="Digite o nome do produto...">
+            <input type="text" id="searchEstoqueInput" placeholder="Digite o nome do produto..." style="flex: 1 1 160px; min-width: 130px;">
+            <select id="estoqueCategoriaFilter" title="Filtrar por categoria" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:200px;cursor:pointer;">
+                <option value="">Todas as categorias</option>
+            </select>
             <select id="locationFilter" title="Filtrar por local" style="padding:10px 12px;border:1px solid var(--border-color);border-radius:8px;font-size:15px;background:#fff;max-width:220px;cursor:pointer;">
-                <option value="">Selecione um local...</option>
                 <option value="all">Todos os locais</option>
             </select>
             <button onclick="pesquisar('estoque', buscarEstoque)">Pesquisar</button>
@@ -1875,7 +1877,7 @@
         suprimentos: ['searchSuprimentosInput', 'searchSuprimentosBarcode', 'searchSuprimentosUnidade'],
         margem: ['margemDataDe', 'margemDataAte', 'margemCategoria'],
         vendidos: ['vendidosDataDe', 'vendidosDataAte', 'vendidosModo', 'vendidosCategoria'],
-        estoque: ['searchEstoqueInput', 'locationFilter'],
+        estoque: ['searchEstoqueInput', 'locationFilter', 'estoqueCategoriaFilter'],
         vendas: ['searchVendasInput', 'vendasWarehouseFilter', 'vendasStatusFilter', 'vendasDataDe', 'vendasDataAte'],
         transferencias: ['searchTransferenciasInput', 'transferOrigemFilter', 'transferDestinoFilter', 'transferDataDe', 'transferDataAte'],
         financeiro: ['searchFinanceiroInput'],
@@ -2757,7 +2759,8 @@
 
     /* 2. BUSCAR ESTOQUE */
     /* FILTRO DE LOCAIS (somente locais internos) */
-    // Preenche selects de local (internos do Odoo). Cada config: { id, placeholder, todos }
+    // Preenche selects de local (internos do Odoo). Cada config: { id, placeholder, todos, semPlaceholder }
+    // semPlaceholder: true remove a opção "Selecione..." e deixa "Todos" pré-selecionado.
     async function carregarLocaisFiltro(configs) {
         try {
             const response = await fetch('/api/odoo', {
@@ -2774,24 +2777,49 @@
             configs.forEach(cfg => {
                 const select = document.getElementById(cfg.id);
                 const atual = select.value;
-                select.innerHTML = `<option value="">${cfg.placeholder}</option><option value="all">${cfg.todos}</option>` +
+                const placeholderHtml = cfg.semPlaceholder ? '' : `<option value="">${cfg.placeholder}</option>`;
+                select.innerHTML = placeholderHtml + `<option value="all">${cfg.todos}</option>` +
                     data.result.map(l => `<option value="${l.id}">${escHtml(rotulo(l))}</option>`).join('');
                 if (atual && (atual === 'all' || data.result.some(l => String(l.id) === atual))) select.value = atual;
+                else if (cfg.semPlaceholder) select.value = 'all';
             });
         } catch (e) { /* os filtros ficam só com as opções padrão */ }
     }
 
     function carregarLocaisEstoque() {
-        return carregarLocaisFiltro([{ id: 'locationFilter', placeholder: 'Selecione um local...', todos: 'Todos os locais' }]);
+        return carregarLocaisFiltro([{ id: 'locationFilter', placeholder: 'Selecione um local...', todos: 'Todos os locais', semPlaceholder: true }]);
     }
 
-    // Abre a tela de Estoque sem carregar nada: o usuário escolhe os filtros primeiro
+    // Categorias do filtro da tela de Estoque (reaproveita a mesma lista de categorias de produtos de venda)
+    async function carregarCategoriasEstoque() {
+        const select = document.getElementById('estoqueCategoriaFilter');
+        try {
+            const response = await fetch('/api/odoo', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: "get_product_categories" })
+            });
+            const data = await response.json();
+            if (!data.result) return;
+            const atual = select.value;
+            select.innerHTML = '<option value="">Todas as categorias</option>' +
+                data.result.map(c => `<option value="${c.id}">${escHtml(c.name)}</option>`).join('');
+            if (atual && data.result.some(c => String(c.id) === atual)) select.value = atual;
+        } catch (e) { /* o filtro fica só com "Todas as categorias" */ }
+    }
+
+    // Abre a tela de Estoque já com "Todos os locais" selecionado
     function abrirTelaEstoque() {
         mostrarTela('estoqueSection');
         document.getElementById('searchEstoqueInput').value = '';
-        document.getElementById('locationFilter').value = '';
+        document.getElementById('locationFilter').value = 'all';
+        document.getElementById('estoqueCategoriaFilter').value = '';
+        delete filtrosAplicados['searchEstoqueInput'];
+        delete filtrosAplicados['locationFilter'];
+        delete filtrosAplicados['estoqueCategoriaFilter'];
         carregarLocaisEstoque();
-        pesquisar('estoque', buscarEstoque); // sem filtro, só mostra a orientação
+        carregarCategoriasEstoque();
+        pesquisar('estoque', buscarEstoque); // "Todos os locais" já selecionado: mostra o estoque de todos os locais
     }
 
     /* AJUSTE DE ESTOQUE */
@@ -2946,6 +2974,7 @@
         const query = lerFiltro("searchEstoqueInput").trim();
         const localEscolhido = lerFiltro("locationFilter");
         const location_id = localEscolhido === 'all' ? '' : localEscolhido;
+        const categoriaEscolhida = lerFiltro("estoqueCategoriaFilter");
         const status = document.getElementById("statusEstoque");
         const results = document.getElementById("resultsEstoque");
         const reqId = ++estoqueReqId;
@@ -2962,7 +2991,7 @@
             const response = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: "get_stock", query, location_id: location_id || null })
+                body: JSON.stringify({ action: "get_stock", query, location_id: location_id || null, category_id: categoriaEscolhida || null })
             });
 
             const data = await response.json();
