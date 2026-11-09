@@ -570,6 +570,12 @@ export default async function handler(req, res) {
             await execute("account.move", "write", [[Number(invoiceId)], { invoice_date_due: dueDate }]);
         };
 
+        // Coloca a data de "Lançamento" escolhida na tela no campo "Data da fatura" (invoice_date) da fatura provisória.
+        const aplicarDataNaFatura = async (invoiceId, invoiceDate) => {
+            if (!invoiceId || !invoiceDate) return;
+            await execute("account.move", "write", [[Number(invoiceId)], { invoice_date: invoiceDate }]);
+        };
+
         // Mantém a(s) fatura(s) PROVISÓRIA(S) (rascunho) do pedido idênticas às linhas do pedido de venda:
         // atualiza quantidade/preço/desconto, cria as linhas novas e apaga as que saíram do pedido.
         // Faturas já lançadas (posted) nunca são mexidas aqui.
@@ -1583,7 +1589,7 @@ export default async function handler(req, res) {
 
         // AÇÃO: CRIAR/ATUALIZAR PEDIDO DE VENDA (E, OPCIONALMENTE, CONFIRMAR + BAIXAR ESTOQUE + FATURAR)
         if (action === "save_sale_order") {
-            const { order_id, partner_id, due_date, order_date, warehouse_id, lines, confirm, removed_line_ids } = body;
+            const { order_id, partner_id, due_date, order_date, invoice_date, warehouse_id, lines, confirm, removed_line_ids } = body;
 
             if (!partner_id) return res.status(400).json({ error: "Selecione um cliente para o pedido." });
             const validLines = (lines || []).filter(l => l.product_id);
@@ -1702,6 +1708,12 @@ export default async function handler(req, res) {
                             await aplicarVencimentoNaFatura(invoiceId, due_date);
                         } catch (e) {
                             warnings.push("Fatura criada, mas não foi possível definir a data de vencimento: " + e.message);
+                        }
+                        // "Data da fatura" = "Lançamento" escolhido na tela
+                        try {
+                            await aplicarDataNaFatura(invoiceId, invoice_date);
+                        } catch (e) {
+                            warnings.push("Fatura criada, mas não foi possível definir a data da fatura: " + e.message);
                         }
                     } else {
                         warnings.push("Pedido confirmado, mas ainda não havia nada a faturar. Use o botão \"Gerar Fatura\" no pedido depois de confirmar a entrega.");
