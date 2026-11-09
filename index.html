@@ -347,6 +347,8 @@
         .prod-picker-btn .pp-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .prod-picker-btn .pp-name.placeholder { color: #999; }
         .prod-picker-btn .pp-qty { font-family: monospace; font-size: 12px; background: #eee; color: #444; padding: 2px 8px; border-radius: 10px; white-space: nowrap; }
+        /* A tabela de produtos cresce conforme as linhas (sem barra de rolagem própria); se passar da tela, é o modal que rola */
+        #saleModal .table-container { flex-shrink: 0; }
         #saleModal thead th { white-space: nowrap; vertical-align: middle; text-align: left; }
         #saleModal thead th::after { margin-left: 4px; }
         .sale-totals { margin-top: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 15px; }
