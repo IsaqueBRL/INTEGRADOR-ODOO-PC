@@ -2127,6 +2127,9 @@ export default async function handler(req, res) {
                 ["product_id.sale_ok", "=", true], ["product_id.type", "in", ["consu", "product"]]];
             if (locationId) domain.push(["location_id", "child_of", locationId]);
             if (query) domain.push(["product_id.name", "ilike", query]);
+            // Filtro de categoria (inclui subcategorias, igual às outras telas)
+            const categoryId = Number(body.category_id) || 0;
+            if (categoryId) domain.push(["product_id.categ_id", "child_of", categoryId]);
 
             const result = await execute("stock.quant", "search_read", [domain], {
                 fields: ["id", "location_id", "product_id", "quantity"],
