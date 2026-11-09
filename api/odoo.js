@@ -2105,14 +2105,16 @@ export default async function handler(req, res) {
                 return res.status(400).json({ error: "Nome do parceiro é obrigatório." });
             }
 
+            // Padrão do sistema: nome do cliente sempre em MAIÚSCULO
+            const nomeMaiusculo = name.trim().toLocaleUpperCase("pt-BR");
             const newPartnerId = await execute("res.partner", "create", [{
-                name: name.trim(),
+                name: nomeMaiusculo,
                 email: email ? email.trim() : false,
                 phone: phone ? phone.trim() : false,
                 customer_rank: 1
             }]);
 
-            return res.status(200).json({ success: true, id: newPartnerId, name: name.trim() });
+            return res.status(200).json({ success: true, id: newPartnerId, name: nomeMaiusculo });
         }
 
         // AÇÃO: BUSCAR ESTOQUE

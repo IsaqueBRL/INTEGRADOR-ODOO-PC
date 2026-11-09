@@ -1041,7 +1041,7 @@
         <h2>Criar Parceiro</h2>
         
         <label>Nome do Cliente *</label>
-        <input type="text" id="newPartnerName">
+        <input type="text" id="newPartnerName" oninput="paraMaiusculo(this)" style="text-transform: uppercase;" autocomplete="off">
 
         <label>E-mail</label>
         <input type="email" id="newPartnerEmail" placeholder="exemplo@email.com">
@@ -1124,7 +1124,7 @@
         <div style="display: flex; gap: 12px; flex-wrap: wrap;">
             <div style="flex: 1.3 1 0; min-width: 150px;" class="partner-search-container">
                 <label>Cliente</label>
-                <input type="text" id="saleCustomerInput" placeholder="Buscar ou criar cliente..." oninput="buscarParceiroOdoo(this.value)" autocomplete="off">
+                <input type="text" id="saleCustomerInput" placeholder="Buscar ou criar cliente..." oninput="paraMaiusculo(this); buscarParceiroOdoo(this.value)" autocomplete="off" style="text-transform: uppercase;">
                 <input type="hidden" id="saleCustomerId">
                 <div id="partnerDropdown" class="partner-dropdown"></div>
             </div>
@@ -4390,6 +4390,16 @@
         }
     }
 
+    // Nomes de clientes sempre em MAIÚSCULO (padrão do sistema), mantendo a posição do cursor
+    function paraMaiusculo(input) {
+        const ini = input.selectionStart, fim = input.selectionEnd;
+        const up = input.value.toLocaleUpperCase('pt-BR');
+        if (input.value !== up) {
+            input.value = up;
+            try { input.setSelectionRange(ini, fim); } catch (e) { /* ok */ }
+        }
+    }
+
     function buscarParceiroOdoo(query) {
         clearTimeout(partnerSearchTimer);
         const dropdown = document.getElementById('partnerDropdown');
@@ -4450,7 +4460,7 @@
     }
 
     async function salvarNovoParceiroOdoo() {
-        const name = document.getElementById('newPartnerName').value;
+        const name = document.getElementById('newPartnerName').value.toLocaleUpperCase('pt-BR');
         const email = document.getElementById('newPartnerEmail').value;
         const phone = document.getElementById('newPartnerPhone').value;
         const btn = document.getElementById('btnSalvarParceiro');
