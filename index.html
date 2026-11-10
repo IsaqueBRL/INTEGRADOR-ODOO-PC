@@ -912,14 +912,12 @@
     <div class="modal" style="max-width: 460px;">
         <h2>Transferência entre Contas</h2>
 
-        <label>Diário</label>
-        <input type="text" id="acctTrfJournal" readonly disabled>
-
-        <label>Data contábil</label>
-        <input type="text" id="acctTrfDate" readonly disabled>
+        <label>Data da transferência</label>
+        <input type="date" id="acctTrfDate">
 
         <label>Conta de origem (de onde sai o valor)</label>
-        <select id="acctTrfFrom"></select>
+        <select id="acctTrfFrom" onchange="atualizarSaldoOrigemTransf()"></select>
+        <div id="acctTrfSaldo" style="font-size:12px; color:#666; margin-top:-6px;"></div>
 
         <label>Conta de destino (para onde entra o valor)</label>
         <select id="acctTrfTo"></select>
@@ -3403,19 +3401,25 @@
     }
 
     // ===== TRANSFERÊNCIA ENTRE CONTAS =====
-    let acctTrfDateIso = '';
+    let acctTrfSaldos = {}; // saldo atual de cada conta de origem possível
+
+    const moedaBR = v => 'R$ ' + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+    function atualizarSaldoOrigemTransf() {
+        const id = document.getElementById('acctTrfFrom').value;
+        document.getElementById('acctTrfSaldo').innerText = id ? 'Saldo disponível: ' + moedaBR(acctTrfSaldos[id] || 0) : '';
+    }
 
     async function abrirModalTransferenciaContas() {
         const selFrom = document.getElementById('acctTrfFrom');
         const selTo = document.getElementById('acctTrfTo');
 
-        // data de hoje (fuso local), só exibida: o usuário não edita
+        // "Data da transferência" começa com hoje (fuso local) e pode ser alterada
         const hoje = new Date();
         const pad = n => String(n).padStart(2, '0');
-        acctTrfDateIso = `${hoje.getFullYear()}-${pad(hoje.getMonth() + 1)}-${pad(hoje.getDate())}`;
-        document.getElementById('acctTrfDate').value = `${pad(hoje.getDate())}/${pad(hoje.getMonth() + 1)}/${hoje.getFullYear()}`;
-        document.getElementById('acctTrfJournal').value = 'Transferências';
+        document.getElementById('acctTrfDate').value = `${hoje.getFullYear()}-${pad(hoje.getMonth() + 1)}-${pad(hoje.getDate())}`;
         document.getElementById('acctTrfAmount').value = '';
+        document.getElementById('acctTrfSaldo').innerText = '';
 
         try {
             const res = await fetch('/api/odoo', {
@@ -3427,8 +3431,9 @@
             if (!data.accounts) return alert(data.error || 'Não foi possível carregar as contas.');
             if (!data.journal) return alert('Diário "Transferências" não encontrado no Odoo.');
 
-            document.getElementById('acctTrfJournal').value = data.journal.name;
-            const opcoes = data.accounts.map(a => `<option value="${a.id}">${escHtml((a.code ? a.code + ' ' : '') + a.name)}</option>`).join('');
+            acctTrfSaldos = {};
+            data.accounts.forEach(a => { acctTrfSaldos[a.id] = Number(a.balance) || 0; });
+            const opcoes = data.accounts.map(a => `<option value="${a.id}">${escHtml(a.name)}</option>`).join('');
             selFrom.innerHTML = '<option value="">Selecione a conta de origem...</option>' + opcoes;
             selTo.innerHTML = '<option value="">Selecione a conta de destino...</option>' + opcoes;
             document.getElementById('accountTransferModal').style.display = 'flex';
@@ -3445,11 +3450,17 @@
         const from_account_id = document.getElementById('acctTrfFrom').value;
         const to_account_id = document.getElementById('acctTrfTo').value;
         const amount = parseFloat(document.getElementById('acctTrfAmount').value);
+        const date = document.getElementById('acctTrfDate').value;
         const btn = document.getElementById('btnLancarTransfContas');
 
+        if (!date) return alert('Informe a data da transferência.');
         if (!from_account_id || !to_account_id) return alert('Selecione a conta de origem e a conta de destino.');
         if (from_account_id === to_account_id) return alert('A conta de origem e a de destino devem ser diferentes.');
         if (!(amount > 0)) return alert('Informe um valor maior que zero.');
+        const saldoOrigem = acctTrfSaldos[from_account_id] || 0;
+        if (Math.round(amount * 100) > Math.round(saldoOrigem * 100)) {
+            return alert('Valor acima do saldo da conta de origem. Saldo disponível: ' + moedaBR(saldoOrigem) + '.');
+        }
 
         btn.innerText = 'Lançando...';
         btn.disabled = true;
@@ -3458,7 +3469,7 @@
             const res = await fetch('/api/odoo', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ action: 'create_account_transfer', from_account_id, to_account_id, amount, date: acctTrfDateIso })
+                body: JSON.stringify({ action: 'create_account_transfer', from_account_id, to_account_id, amount, date })
             });
             const data = await res.json();
             if (data.success) {

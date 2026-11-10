@@ -135,6 +135,19 @@ async function getPaymentAccounts() {
     });
 }
 
+// Saldo atual (itens lançados) de cada conta, mesma base da tela Financeiro: { [accountId]: saldo }
+async function getSaldosContas(accountIds) {
+    const saldo = {};
+    if (!accountIds || accountIds.length === 0) return saldo;
+    const groups = await execute("account.move.line", "read_group", [
+        [["account_id", "in", accountIds], ["parent_state", "=", "posted"]]
+    ], { groupby: ["account_id"], fields: ["balance"] });
+    (groups || []).forEach(g => {
+        if (Array.isArray(g.account_id)) saldo[g.account_id[0]] = Number(g.balance) || 0;
+    });
+    return saldo;
+}
+
 // Diário "Transferências" (código TRF)
 async function getTransferJournal() {
     const journals = await execute("account.journal", "search_read", [["|", ["name", "=", "Transferências"], ["code", "=", "TRF"]]], {
@@ -2405,8 +2418,9 @@ export default async function handler(req, res) {
         if (action === "get_account_transfer_setup") {
             const accounts = await getCashBankAccounts();
             const journal = await getTransferJournal();
+            const saldos = await getSaldosContas(accounts.map(a => a.id)).catch(() => ({}));
             return res.status(200).json({
-                accounts: accounts.map(a => ({ id: a.id, code: a.code || "", name: a.name || "" })),
+                accounts: accounts.map(a => ({ id: a.id, code: a.code || "", name: a.name || "", balance: saldos[a.id] || 0 })),
                 journal: journal ? { id: journal.id, name: journal.name } : null
             });
         }
@@ -2430,12 +2444,16 @@ export default async function handler(req, res) {
             const journal = await getTransferJournal();
             if (!journal) return res.status(400).json({ error: 'Diário "Transferências" não encontrado no Odoo.' });
 
-            // data automática (a do painel, que usa o fuso do usuário); se fugir de ±1 dia do servidor, usa a do servidor
-            const serverToday = new Date().toISOString().slice(0, 10);
-            let entryDate = serverToday;
-            if (/^\d{4}-\d{2}-\d{2}$/.test(body.date || "")) {
-                const diffDays = Math.abs(new Date(body.date + "T00:00:00Z") - new Date(serverToday + "T00:00:00Z")) / 86400000;
-                if (diffDays <= 1) entryDate = body.date;
+            // não permite transferir mais do que a conta de origem tem
+            const saldoOrigem = (await getSaldosContas([fromId]))[fromId] || 0;
+            if (amount > Math.round(saldoOrigem * 100) / 100 + 0.004) {
+                return res.status(400).json({ error: "Saldo insuficiente na conta de origem. Saldo atual: R$ " + saldoOrigem.toFixed(2).replace(".", ",") + "." });
+            }
+
+            // "Data da transferência" escolhida pelo usuário (se vier inválida, usa a data de hoje do servidor)
+            let entryDate = new Date().toISOString().slice(0, 10);
+            if (/^\d{4}-\d{2}-\d{2}$/.test(body.date || "") && !isNaN(new Date(body.date + "T00:00:00Z"))) {
+                entryDate = body.date;
             }
 
             // 1ª linha: conta que RECEBE (débito); 2ª linha: conta de ONDE SAI (crédito)
