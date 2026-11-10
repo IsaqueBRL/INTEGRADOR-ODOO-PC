@@ -139,12 +139,20 @@ async function getPaymentAccounts() {
 async function getSaldosContas(accountIds) {
     const saldo = {};
     if (!accountIds || accountIds.length === 0) return saldo;
-    const groups = await execute("account.move.line", "read_group", [
-        [["account_id", "in", accountIds], ["parent_state", "=", "posted"]]
-    ], { groupby: ["account_id"], fields: ["balance"] });
-    (groups || []).forEach(g => {
-        if (Array.isArray(g.account_id)) saldo[g.account_id[0]] = Number(g.balance) || 0;
-    });
+    // mesmo cálculo da tela Financeiro: soma dos itens lançados; se falhar, usa o saldo atual da própria conta
+    try {
+        const groups = await execute("account.move.line", "read_group", [
+            [["account_id", "in", accountIds], ["parent_state", "=", "posted"]]
+        ], { groupby: ["account_id"], fields: ["balance"] });
+        (groups || []).forEach(g => {
+            if (Array.isArray(g.account_id) && g.balance !== undefined && g.balance !== null) saldo[g.account_id[0]] = Number(g.balance) || 0;
+        });
+    } catch (e) { /* cai no saldo atual da conta abaixo */ }
+    const faltam = accountIds.filter(id => saldo[id] === undefined);
+    if (faltam.length > 0) {
+        const contas = await execute("account.account", "read", [faltam], { fields: ["current_balance"] }).catch(() => []);
+        (contas || []).forEach(c => { saldo[c.id] = Number(c.current_balance) || 0; });
+    }
     return saldo;
 }
 
@@ -2418,7 +2426,7 @@ export default async function handler(req, res) {
         if (action === "get_account_transfer_setup") {
             const accounts = await getCashBankAccounts();
             const journal = await getTransferJournal();
-            const saldos = await getSaldosContas(accounts.map(a => a.id)).catch(() => ({}));
+            const saldos = await getSaldosContas(accounts.map(a => a.id));
             return res.status(200).json({
                 accounts: accounts.map(a => ({ id: a.id, code: a.code || "", name: a.name || "", balance: saldos[a.id] || 0 })),
                 journal: journal ? { id: journal.id, name: journal.name } : null
