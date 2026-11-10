@@ -2443,6 +2443,8 @@ export default async function handler(req, res) {
                 move_type: "entry",
                 journal_id: journal.id,
                 date: entryDate,
+                // campo "Referência" do lançamento (aparece também no Extrato de Movimentações)
+                ref: "TRANSFERENCIA ENTRE CONTAS",
                 line_ids: [
                     [0, 0, { account_id: toId, debit: amount, credit: 0 }],
                     [0, 0, { account_id: fromId, debit: 0, credit: amount }]
