@@ -6020,11 +6020,29 @@ function gerarQr(texto) {
     function status(t, erro) { var el = document.getElementById('qrStatus'); el.textContent = t || ''; el.style.color = erro ? '#c0392b' : ''; }
     function linkDoLocal(l) { return dados.url.replace(/\/+$/, '') + '/?l=' + encodeURIComponent(l.token); }
 
-    function desenhar(l, tamanho) {
+    var TEXTO_RODAPE = 'Use o aplicativo para facilitar o seu pedido, escaneie o QR CODE';
+
+    // "comRodape" = imagem para baixar/imprimir: leva, abaixo do nome do local, a frase de orientação ao cliente
+    function desenhar(l, tamanho, comRodape) {
         var m = gerarQr(linkDoLocal(l)), n = m.length, margem = 4;
         var mod = Math.max(2, Math.floor(tamanho / (n + 2 * margem))), lado = (n + 2 * margem) * mod;
         var c = document.createElement('canvas'), alturaTxt = Math.round(lado * 0.16);
-        c.width = lado; c.height = lado + alturaTxt;
+
+        // quebra a frase em linhas que cabem na largura da imagem
+        var fonteRod = Math.round(lado * 0.045), linhasRod = [], alturaRod = 0, entre = Math.round(fonteRod * 1.3);
+        if (comRodape) {
+            var tmp = document.createElement('canvas').getContext('2d');
+            tmp.font = '600 ' + fonteRod + 'px Arial, sans-serif';
+            var palavras = TEXTO_RODAPE.split(' '), atual = '';
+            palavras.forEach(function (p) {
+                var teste = atual ? atual + ' ' + p : p;
+                if (tmp.measureText(teste).width > lado - 24 && atual) { linhasRod.push(atual); atual = p; } else atual = teste;
+            });
+            if (atual) linhasRod.push(atual);
+            alturaRod = linhasRod.length * entre + Math.round(fonteRod * 0.9);
+        }
+
+        c.width = lado; c.height = lado + alturaTxt + alturaRod;
         var x = c.getContext('2d');
         x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height);
         x.fillStyle = '#000';
@@ -6034,6 +6052,12 @@ function gerarQr(texto) {
         x.textAlign = 'center'; x.textBaseline = 'middle';
         while (x.measureText(l.name).width > lado - 16 && fonte > 8) { fonte -= 1; x.font = '700 ' + fonte + 'px Arial, sans-serif'; }
         x.fillText(l.name, lado / 2, lado + alturaTxt / 2 - 4);
+
+        if (comRodape) {
+            x.font = '600 ' + fonteRod + 'px Arial, sans-serif';
+            x.textBaseline = 'top';
+            linhasRod.forEach(function (linha, i) { x.fillText(linha, lado / 2, lado + alturaTxt + i * entre); });
+        }
         return c;
     }
 
@@ -6063,7 +6087,7 @@ function gerarQr(texto) {
             });
             var bd = document.createElement('button'); bd.className = 'btn-action'; bd.textContent = 'Baixar';
             bd.addEventListener('click', function () {
-                var a = document.createElement('a'); a.href = desenhar(l, 1000).toDataURL('image/png'); a.download = nomeArquivo(l);
+                var a = document.createElement('a'); a.href = desenhar(l, 1000, true).toDataURL('image/png'); a.download = nomeArquivo(l);
                 document.body.appendChild(a); a.click(); a.remove();
             });
             bt.appendChild(bc); bt.appendChild(bd);
@@ -6118,7 +6142,7 @@ function gerarQr(texto) {
         d.head.appendChild(st);
         dados.locais.forEach(function (l) {
             var p = d.createElement('div'); p.className = 'p';
-            var im = d.createElement('img'); im.src = desenhar(l, 1000).toDataURL('image/png');
+            var im = d.createElement('img'); im.src = desenhar(l, 1000, true).toDataURL('image/png');
             p.appendChild(im); d.body.appendChild(p);
         });
         w.focus();
