@@ -2621,6 +2621,9 @@ export default async function handler(req, res) {
         if (action === "update_transfer") {
             const { order_id, location_id, location_dest_id, lines, validate } = body;
             if (!order_id) return res.status(400).json({ error: "ID da transferência é obrigatório." });
+            if (location_id && location_dest_id && Number(location_id) === Number(location_dest_id)) {
+                return res.status(400).json({ error: "Origem e destino não podem ser o mesmo local." });
+            }
 
             const writeData = {};
             if (location_id) writeData.location_id = Number(location_id);

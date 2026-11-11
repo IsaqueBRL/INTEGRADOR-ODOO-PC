@@ -1237,7 +1237,7 @@
             </div>
             <div style="flex: 1; min-width: 200px;">
                 <label>Local de Destino</label>
-                <select id="transferLocationDest" onchange="marcarAlteracaoTransferencia()"></select>
+                <select id="transferLocationDest" onchange="aoTrocarDestinoTransferencia()"></select>
             </div>
         </div>
 
@@ -5410,9 +5410,32 @@
         return opts;
     }
 
+    // Origem e destino não podem ser o mesmo local: o local escolhido num campo fica bloqueado no outro.
+    // "quemMudou" ('src' ou 'dest') é o campo que o usuário acabou de mexer; se mesmo assim ficarem iguais,
+    // o OUTRO campo passa para o primeiro local diferente.
+    function evitarMesmoLocalTransferencia(quemMudou) {
+        const selSrc = document.getElementById('transferLocationSrc');
+        const selDest = document.getElementById('transferLocationDest');
+        if (selSrc.value && selSrc.value === selDest.value) {
+            const alvo = quemMudou === 'dest' ? selSrc : selDest;
+            const outro = quemMudou === 'dest' ? selDest : selSrc;
+            const livre = Array.from(alvo.options).find(o => o.value !== outro.value);
+            if (livre) alvo.value = livre.value;
+        }
+        Array.from(selSrc.options).forEach(o => { o.disabled = (o.value === selDest.value); });
+        Array.from(selDest.options).forEach(o => { o.disabled = (o.value === selSrc.value); });
+    }
+
+    function aoTrocarDestinoTransferencia() {
+        if (!isCurrentTransferEditable) return;
+        evitarMesmoLocalTransferencia('dest');
+        marcarAlteracaoTransferencia();
+    }
+
     // Ao trocar o local de origem: recarrega os produtos e atualiza as linhas já adicionadas
     async function aoTrocarOrigemTransferencia() {
         if (!isCurrentTransferEditable) return;
+        evitarMesmoLocalTransferencia('src');
         marcarAlteracaoTransferencia();
         const ok = await carregarProdutosDaOrigem(document.getElementById('transferLocationSrc').value);
         if (!ok) return;
@@ -5580,9 +5603,13 @@
             const srcId = Array.isArray(picking.location_id) ? picking.location_id[0] : picking.location_id;
             const destId = Array.isArray(picking.location_dest_id) ? picking.location_dest_id[0] : picking.location_dest_id;
 
-            const locOptions = availableLocations.map(l =>
-                `<option value="${l.id}">${escHtml(l.complete_name)}</option>`
-            ).join('');
+            // só o nome do local ("CASA/Stock" -> "CASA"); se dois locais tiverem o mesmo nome curto, mantém o nome completo
+            const contagemNomes = {};
+            availableLocations.forEach(l => { const n = nomeLocalCurto(l.complete_name); contagemNomes[n] = (contagemNomes[n] || 0) + 1; });
+            const locOptions = availableLocations.map(l => {
+                const n = nomeLocalCurto(l.complete_name);
+                return `<option value="${l.id}">${escHtml(contagemNomes[n] > 1 ? l.complete_name : n)}</option>`;
+            }).join('');
 
             const selectSrc = document.getElementById('transferLocationSrc');
             const selectDest = document.getElementById('transferLocationDest');
@@ -5592,6 +5619,7 @@
             selectDest.value = destId;
             selectSrc.disabled = !isDraft;
             selectDest.disabled = !isDraft;
+            if (isDraft) evitarMesmoLocalTransferencia('src'); // origem e destino nunca iguais
 
             renderTransferLines(data.lines || [], isDraft);
             document.getElementById('btnAddTransferLine').style.display = isDraft ? 'inline-block' : 'none';
