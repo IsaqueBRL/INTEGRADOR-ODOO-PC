@@ -354,6 +354,7 @@
         /* parte de baixo do pedido: observações à esquerda, totais à direita */
         .sale-bottom { display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; margin-top: 10px; }
         .sale-note { flex: 1 1 280px; max-width: 520px; display: flex; flex-direction: column; gap: 4px; }
+        .modal .sale-note label { margin-bottom: 0; } /* o label padrão do modal tem margem negativa e a caixa ficava por cima do texto */
         .sale-note textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 80px; padding: 9px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; font-family: inherit; }
         .sale-note textarea:disabled { background: #f3f3f3; color: #888; cursor: not-allowed; }
         .sale-bottom .sale-totals { margin-top: 0; margin-left: auto; }
