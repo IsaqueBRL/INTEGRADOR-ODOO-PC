@@ -128,7 +128,7 @@
         .vs-pago { background-color: #e8f5e9; color: #2e7d32; }
         .vs-parcial { background-color: #e3f2fd; color: #1565c0; }
         /* Venda totalmente paga: campos e botões da tela ficam com aparência de travados */
-        #saleModal.venda-paga .modal input, #saleModal.venda-paga .modal select { background: #f3f3f3; color: #777; cursor: not-allowed; }
+        #saleModal.venda-paga .modal input, #saleModal.venda-paga .modal select, #saleModal.venda-paga .modal textarea { background: #f3f3f3; color: #777; cursor: not-allowed; }
         #saleModal.venda-paga .modal .prod-picker-btn, #saleModal.venda-paga #btnAddLine, #saleModal.venda-paga .btn-remove-line { opacity: .5; cursor: not-allowed; }
         /* Filtro com várias opções (caixas de seleção) */
         .ms { position: relative; flex: 0 0 auto; width: 215px; }
@@ -351,6 +351,12 @@
         #saleModal .table-container { flex-shrink: 0; }
         #saleModal thead th { white-space: nowrap; vertical-align: middle; text-align: left; }
         #saleModal thead th::after { margin-left: 4px; }
+        /* parte de baixo do pedido: observações à esquerda, totais à direita */
+        .sale-bottom { display: flex; gap: 20px; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; margin-top: 10px; }
+        .sale-note { flex: 1 1 280px; max-width: 520px; display: flex; flex-direction: column; gap: 4px; }
+        .sale-note textarea { width: 100%; box-sizing: border-box; resize: vertical; min-height: 80px; padding: 9px 12px; border: 1px solid var(--border-color); border-radius: 6px; font-size: 14px; font-family: inherit; }
+        .sale-note textarea:disabled { background: #f3f3f3; color: #888; cursor: not-allowed; }
+        .sale-bottom .sale-totals { margin-top: 0; margin-left: auto; }
         .sale-totals { margin-top: 10px; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font-size: 15px; }
         .sale-totals > div { display: flex; justify-content: flex-end; gap: 10px; }
         .sale-totals span { color: #555; font-weight: 600; }
@@ -1161,12 +1167,18 @@
 
         <div style="text-align: left;"><button id="btnAddLine" class="btn-add-produto" onclick="adicionarLinhaProduto()"><span class="mais">+</span>Adicionar Produto</button></div>
 
+        <div class="sale-bottom">
+        <div class="sale-note">
+            <label for="saleNote">Observações</label>
+            <textarea id="saleNote" rows="4" placeholder="Escreva aqui as observações deste pedido..." oninput="verificarAlteracoesDatas()"></textarea>
+        </div>
         <div class="sale-totals">
             <div><span>Valor Total:</span> <b id="saleTotalVal">R$ 0.00</b></div>
             <div><span>Total de Desconto:</span> <b id="saleTotalDesc" class="desc">R$ 0.00</b></div>
             <div id="saleTotalPagoRow" style="display: none;"><span>Valor Pago:</span> <b id="saleTotalPago" class="pago">R$ 0.00</b></div>
             <div id="saleTotalPendenteRow" style="display: none;"><span>Valor Pendente:</span> <b id="saleTotalPendente" class="pendente">R$ 0.00</b></div>
             <div class="liquido"><span>Total Líquido:</span> <b id="saleTotalLiq">R$ 0.00</b></div>
+        </div>
         </div>
 
         <div class="modal-actions" id="saleModalActions"></div>
@@ -3722,6 +3734,8 @@
         document.getElementById('saleCustomerId').value = '';
         document.getElementById('saleCustomerInput').value = '';
         document.getElementById('saleCustomerInput').disabled = false;
+        document.getElementById('saleNote').value = '';
+        document.getElementById('saleNote').disabled = false;
 
         const dueInput = document.getElementById('saleDueDate');
         const hoje = new Date();
@@ -3821,7 +3835,10 @@
             const orderDateInput = document.getElementById('saleOrderDate');
             orderDateInput.value = utcParaInputLocal(order.date_order).slice(0, 10);
             originalOrderDateUtc = order.date_order || null;
-            datasIniciais = { order: orderDateInput.value, due: dueInput.value };
+            const noteInput = document.getElementById('saleNote');
+            noteInput.value = order.note || '';
+            noteInput.disabled = (order.state === 'cancel');
+            datasIniciais = { order: orderDateInput.value, due: dueInput.value, note: noteInput.value };
 
             const selectWh = document.getElementById('saleWarehouse');
             selectWh.innerHTML = '';
@@ -4919,6 +4936,7 @@
                     order_id: currentOrderId,
                     due_date: document.getElementById('saleDueDate').value,
                     order_date: orderDateParaEnvio(),
+                    note: document.getElementById('saleNote').value,
                     lines: linhas,
                     removed_line_ids: [...linesToRemove, ...removidasPorTroca]
                 })
@@ -4951,6 +4969,7 @@
                     partner_id: document.getElementById('saleCustomerId').value,
                     due_date: document.getElementById('saleDueDate').value,
                     order_date: orderDateParaEnvio(),
+                    note: document.getElementById('saleNote').value,
                     warehouse_id: document.getElementById('saleWarehouse').value,
                     lines: coletarLinhasDoFormulario(),
                     removed_line_ids: linesToRemove,
@@ -4985,6 +5004,7 @@
                     due_date: document.getElementById('saleDueDate').value,
                     order_date: orderDateParaEnvio(),
                     invoice_date: document.getElementById('saleOrderDate').value,
+                    note: document.getElementById('saleNote').value,
                     warehouse_id: document.getElementById('saleWarehouse').value,
                     lines: coletarLinhasDoFormulario(),
                     removed_line_ids: linesToRemove,
@@ -5305,7 +5325,7 @@
     // sempre às 12:00 (meio-dia), a hora mais segura contra o dia mudar por diferença de fuso.
     // Se a data não foi alterada em um pedido existente, devolve o valor original sem mexer.
     let originalOrderDateUtc = null;
-    let datasIniciais = { order: '', due: '' };
+    let datasIniciais = { order: '', due: '', note: '' };
     function orderDateParaEnvio() {
         const dia = document.getElementById('saleOrderDate').value;
         if (!dia) return '';
@@ -5330,6 +5350,7 @@
         if (!btn) return;
         const mudou = document.getElementById('saleOrderDate').value !== datasIniciais.order
             || document.getElementById('saleDueDate').value !== datasIniciais.due
+            || document.getElementById('saleNote').value !== (datasIniciais.note || '')
             || assinaturaLinhas() !== linhasIniciais;
         btn.style.display = mudou ? 'inline-block' : 'none';
     }

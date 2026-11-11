@@ -135,6 +135,24 @@ async function getPaymentAccounts() {
     });
 }
 
+// Observações do pedido (campo "note" do Odoo, que é HTML): o painel trabalha com texto simples.
+function observacaoParaHtml(texto) {
+    const t = String(texto || "").replace(/\r\n/g, "\n").trim();
+    if (!t) return false;
+    const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    return t.split("\n").map(l => "<p>" + (l.trim() ? esc(l) : "<br>") + "</p>").join("");
+}
+function observacaoParaTexto(html) {
+    if (!html) return "";
+    return String(html)
+        .replace(/<\s*br\s*\/?>/gi, "\n")
+        .replace(/<\/\s*(p|div|li|h[1-6])\s*>/gi, "\n")
+        .replace(/<[^>]*>/g, "")
+        .replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#0?39;/g, "'").replace(/&amp;/g, "&")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+}
+
 // Saldo atual (itens lançados) de cada conta, mesma base da tela Financeiro: { [accountId]: saldo }
 async function getSaldosContas(accountIds) {
     const saldo = {};
@@ -1610,7 +1628,7 @@ export default async function handler(req, res) {
 
         // AÇÃO: CRIAR/ATUALIZAR PEDIDO DE VENDA (E, OPCIONALMENTE, CONFIRMAR + BAIXAR ESTOQUE + FATURAR)
         if (action === "save_sale_order") {
-            const { order_id, partner_id, due_date, order_date, invoice_date, warehouse_id, lines, confirm, removed_line_ids } = body;
+            const { order_id, partner_id, due_date, order_date, invoice_date, warehouse_id, lines, confirm, removed_line_ids, note } = body;
 
             if (!partner_id) return res.status(400).json({ error: "Selecione um cliente para o pedido." });
             const validLines = (lines || []).filter(l => l.product_id);
@@ -1631,6 +1649,8 @@ export default async function handler(req, res) {
             if (warehouse_id) headerData.warehouse_id = Number(warehouse_id);
             // "Lançamento" = "Data do pedido" do Odoo (data e hora em UTC)
             if (order_date) headerData.date_order = order_date;
+            // Observações do pedido (campo "Termos e condições"/nota do Odoo)
+            if (note !== undefined) headerData.note = observacaoParaHtml(note);
 
             if (!orderId) {
                 headerData.order_line = validLines.map(l => [0, 0, {
@@ -1786,7 +1806,7 @@ export default async function handler(req, res) {
 
         // AÇÃO: ALTERAR LINHAS (ADICIONAR / EXCLUIR / MUDAR QUANTIDADE) E DATAS DE UM PEDIDO JÁ CONFIRMADO
         if (action === "update_sale_lines") {
-            const { order_id, lines, removed_line_ids, order_date, due_date } = body;
+            const { order_id, lines, removed_line_ids, order_date, due_date, note } = body;
             if (!order_id) return res.status(400).json({ error: "ID do pedido é obrigatório." });
             const oid = Number(order_id);
             const comProduto = (lines || []).filter(l => l && l.product_id);
@@ -1880,6 +1900,7 @@ export default async function handler(req, res) {
 
             const vals = { validity_date: due_date || false };
             if (order_date) vals.date_order = order_date;
+            if (note !== undefined) vals.note = observacaoParaHtml(note);
             if (cmds.length > 0) vals.order_line = cmds;
             try {
                 // "skip_procurement" pede ao Odoo para não criar entrega nova a cada ajuste
@@ -2370,7 +2391,7 @@ export default async function handler(req, res) {
             //  escolhido, via get_warehouse_products, e as linhas do pedido trazem o próprio produto)
             const [orders, lines, paymentTerms, warehouses] = await Promise.all([
                 execute("sale.order", "search_read", [[["id", "=", oid]]], {
-                    fields: ["id", "name", "partner_id", "payment_term_id", "order_line", "state", "amount_total", "warehouse_id", "invoice_ids", "invoice_status", "validity_date", "date_order"]
+                    fields: ["id", "name", "partner_id", "payment_term_id", "order_line", "state", "amount_total", "warehouse_id", "invoice_ids", "invoice_status", "validity_date", "date_order", "note"]
                 }),
                 execute("sale.order.line", "search_read", [[["order_id", "=", oid], ["display_type", "=", false]]], {
                     fields: ["id", "product_id", "product_uom_qty", "price_unit", "discount", "price_subtotal"]
@@ -2381,6 +2402,7 @@ export default async function handler(req, res) {
             if (!orders || orders.length === 0) return res.status(404).json({ error: "Pedido de venda não encontrado." });
 
             const order = orders[0];
+            order.note = observacaoParaTexto(order.note); // observações como texto simples para a caixinha da tela
             // Falhas NÃO são engolidas: antes, um erro momentâneo nos itens virava lista vazia e a venda abria sem itens.
             let linhasPedido = lines || [];
             if (linhasPedido.length === 0 && Array.isArray(order.order_line) && order.order_line.length > 0) {
