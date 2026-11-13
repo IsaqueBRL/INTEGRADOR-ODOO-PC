@@ -1924,7 +1924,7 @@
         paymentsListModal: () => fecharModalListaPagamentos(),
         saleModal: () => fecharSaleModal(),
         invoiceModal: () => fecharModalFaturaDetalhe(),
-        transferModal: () => fecharTransferModal(),
+        transferModal: () => pedirFecharTransferencia(),
         accountTransferModal: () => fecharModalTransferenciaContas(),
         ajusteSaldoModal: () => fecharModalAjusteSaldo(),
         ajusteEstoqueModal: () => fecharModalAjusteEstoque(),
@@ -5711,7 +5711,7 @@
 
     function atualizarBotoesTransferencia(state) {
         const container = document.getElementById('transferModalActions');
-        container.innerHTML = `<button class="btn-cancel" onclick="fecharTransferModal()">Fechar</button>`;
+        container.innerHTML = `<button class="btn-cancel" onclick="pedirFecharTransferencia()">Fechar</button>`;
 
         if (state === 'draft') {
             container.innerHTML += `<button class="btn-delete" onclick="excluirTransferencia()">Excluir</button>`;
@@ -5821,6 +5821,20 @@
 
     function fecharTransferModal() {
         document.getElementById('transferModal').style.display = 'none';
+    }
+
+    // Botão "Fechar" (e Esc): transferência em rascunho SEM nenhum item continua existindo no Odoo como rascunho,
+    // então avisa antes de fechar e lembra que, se não for mais usá-la, o melhor é Excluir.
+    async function pedirFecharTransferencia() {
+        const temItem = Array.from(document.querySelectorAll('#transferLinesBody .line-product')).some(sel => sel.value);
+        if (!isCurrentTransferEditable || temItem) { fecharTransferModal(); return; }
+        const fechar = await mostrarConfirmacao(
+            'Esta transferência ainda não tem nenhum item e não foi validada. Se você fechar agora, a ordem continuará salva como rascunho.\n\n' +
+            'Se você não vai mais usar esta ordem de transferência, o melhor é clicar em "Excluir".\n\n' +
+            'Deseja fechar mesmo assim?',
+            'Transferência em rascunho'
+        );
+        if (fechar) fecharTransferModal();
     }
 
     /* ------------------------------------------------------------
