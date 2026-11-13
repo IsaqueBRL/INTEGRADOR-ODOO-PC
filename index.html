@@ -506,6 +506,7 @@
                 <thead>
                     <tr>
                         <th>PRODUTO</th>
+                        <th>ÚLTIMA ENTRADA</th>
                         <th>CÓDIGO DE BARRAS</th>
                         <th>CUSTO</th>
                         <th>ESTOQUE</th>
@@ -2686,7 +2687,7 @@
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhum suprimento encontrado.";
-                results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #888;">Nenhum suprimento encontrado</td></tr>`;
+                results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #888;">Nenhum suprimento encontrado</td></tr>`;
                 return;
             }
 
@@ -2702,6 +2703,7 @@
                 html += `
                     <tr data-id="${prod.id}">
                         <td><strong>${escHtml(prod.name || '-')}</strong></td>
+                        <td data-sort="${dataParaOrdenar(prod.last_entry_date)}">${formatarSoData(prod.last_entry_date)}</td>
                         <td>${escHtml(prod.barcode || '-')}</td>
                         <td class="cost-col">${moedaCusto(prod.standard_price)}</td>
                         <td><span class="stock-badge ${qtyClass}">${Number(qty).toLocaleString('pt-BR', { maximumFractionDigits: 3 })}</span></td>
@@ -2716,7 +2718,7 @@
         } catch (e) {
             if (reqId !== suprimentosReqId) return;
             status.innerText = "Erro ao carregar suprimentos.";
-            results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
+            results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
     }
 
