@@ -2784,6 +2784,38 @@ export default async function handler(req, res) {
                 order: "name asc",
                 limit: 500
             });
+
+            // Data da ÚLTIMA ENTRADA de cada suprimento: mesma regra do "Histórico de movimentações" do Odoo
+            // filtrado por Concluído + Entrada (recebimentos). Sempre pega a data mais recente, então se atualiza sozinha.
+            const ultimaEntrada = {};
+            const tmplIds = (result || []).map(r => r.id);
+            if (tmplIds.length > 0) {
+                try {
+                    const variantes = await execute("product.product", "search_read", [[["product_tmpl_id", "in", tmplIds], ["active", "in", [true, false]]]], { fields: ["id", "product_tmpl_id"], limit: 5000 });
+                    const tmplDaVariante = {};
+                    (variantes || []).forEach(v => { if (Array.isArray(v.product_tmpl_id)) tmplDaVariante[v.id] = v.product_tmpl_id[0]; });
+                    const varIds = Object.keys(tmplDaVariante).map(Number);
+                    if (varIds.length > 0) {
+                        const domEntradas = [["product_id", "in", varIds], ["state", "=", "done"], ["picking_id.picking_type_id.code", "=", "incoming"]];
+                        const registrar = (prodId, data) => {
+                            const t = tmplDaVariante[prodId];
+                            if (t && data && (!ultimaEntrada[t] || data > ultimaEntrada[t])) ultimaEntrada[t] = data;
+                        };
+                        try {
+                            const grupos = await execute("stock.move.line", "read_group", [domEntradas, ["date:max"], ["product_id"]], { lazy: false });
+                            (grupos || []).forEach(g => registrar(idDe(g.product_id), g.date));
+                        } catch (e) {
+                            console.warn("read_group de entradas indisponível, usando a busca linha a linha:", e.message);
+                            const linhas = await execute("stock.move.line", "search_read", [domEntradas], { fields: ["product_id", "date"], order: "date desc", limit: 10000 });
+                            (linhas || []).forEach(l => registrar(idDe(l.product_id), l.date));
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Não foi possível buscar a última entrada dos suprimentos:", e.message);
+                }
+            }
+            (result || []).forEach(r => { r.last_entry_date = ultimaEntrada[r.id] || false; });
+
             return res.status(200).json({ result: result || [] });
         }
 
