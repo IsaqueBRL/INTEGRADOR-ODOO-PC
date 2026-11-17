@@ -2267,6 +2267,109 @@ export default async function handler(req, res) {
             return res.status(200).json({ success: erros.length === 0, results: resultados, errors: erros });
         }
 
+        // ===== AJUSTE DE ESTOQUE DOS SUPRIMENTOS (sem escolher local) =====
+        // Só entram produtos com "Compras" marcado + tipo Mercadorias.
+        // O local é descoberto sozinho: onde o suprimento já tem estoque; se não tiver, o estoque principal do armazém.
+        const locaisInternosDosSuprimentos = async (ids) => {
+            const quants = await execute("stock.quant", "search_read", [[["product_id", "in", ids], ["location_id.usage", "=", "internal"]]], { fields: ["product_id", "location_id", "quantity"] });
+            const porProduto = {};
+            (quants || []).forEach(q => {
+                const pid = Array.isArray(q.product_id) ? q.product_id[0] : q.product_id;
+                const lid = Array.isArray(q.location_id) ? q.location_id[0] : q.location_id;
+                porProduto[pid] = porProduto[pid] || {};
+                porProduto[pid][lid] = (porProduto[pid][lid] || 0) + q.quantity;
+            });
+            return porProduto;
+        };
+
+        if (action === "search_supply_products") {
+            const query = (body.query || "").trim();
+            const domain = [["purchase_ok", "=", true], ["type", "in", ["consu", "product"]]];
+            if (query) domain.push(["name", "ilike", query]);
+            const produtos = await execute("product.product", "search_read", [domain], { fields: ["id", "display_name", "uom_id"], limit: 20 });
+            return res.status(200).json({ result: produtos || [] });
+        }
+
+        if (action === "get_supply_quantities") {
+            const ids = (body.product_ids || []).map(Number).filter(Boolean);
+            if (ids.length === 0) return res.status(200).json({ result: {} });
+            const porProduto = await locaisInternosDosSuprimentos(ids);
+            const mapa = {};
+            ids.forEach(i => { mapa[i] = Object.values(porProduto[i] || {}).reduce((t, v) => t + v, 0); });
+            return res.status(200).json({ result: mapa });
+        }
+
+        if (action === "adjust_supply_stock") {
+            const itens = (body.items || []).filter(i => i && i.product_id && String(i.quantity == null ? "" : i.quantity).trim() !== "" && Number.isFinite(Number(i.quantity)));
+            if (itens.length === 0) return res.status(400).json({ error: "Informe a nova quantidade dos produtos." });
+            if (itens.some(i => Number(i.quantity) < 0)) return res.status(400).json({ error: "A nova quantidade não pode ser negativa." });
+
+            const ids = itens.map(i => Number(i.product_id));
+            // garante que só suprimentos (Compras + Mercadorias) sejam ajustados por esta ação
+            const validos = await execute("product.product", "search_read", [[["id", "in", ids], ["purchase_ok", "=", true], ["type", "in", ["consu", "product"]]]], { fields: ["id", "display_name"] });
+            const nomes = {};
+            (validos || []).forEach(p => { nomes[p.id] = p.display_name; });
+
+            const porProduto = await locaisInternosDosSuprimentos(ids);
+            let localPadrao = null;
+            const obterLocalPadrao = async () => {
+                if (localPadrao) return localPadrao;
+                const wh = await execute("stock.warehouse", "search_read", [[]], { fields: ["lot_stock_id"], limit: 1 });
+                localPadrao = wh && wh[0] && Array.isArray(wh[0].lot_stock_id) ? wh[0].lot_stock_id[0] : 0;
+                return localPadrao;
+            };
+
+            const ctx = { inventory_mode: true, inventory_name: "Ajuste de suprimentos pelo integrador PC" };
+            const resultados = [];
+            const erros = [];
+
+            for (const it of itens) {
+                const pid = Number(it.product_id);
+                const nova = Number(it.quantity);
+                const nome = nomes[pid] || ("produto " + pid);
+                try {
+                    if (!nomes[pid]) { erros.push(nome + ": não é um suprimento (Compras + Mercadorias)."); continue; }
+
+                    const locais = porProduto[pid] || {};
+                    const idsLocais = Object.keys(locais).map(Number);
+                    let locId;
+                    if (idsLocais.length > 1) {
+                        erros.push(nome + ": tem estoque em mais de um local. Ajuste pelo Odoo ou pela tela de Estoque.");
+                        continue;
+                    }
+                    locId = idsLocais.length === 1 ? idsLocais[0] : await obterLocalPadrao();
+                    if (!locId) { erros.push(nome + ": não foi possível descobrir o local do estoque."); continue; }
+
+                    const antes = locais[locId] || 0;
+                    if (Math.abs(antes - nova) < 0.0005) { resultados.push({ product_id: pid, anterior: antes, nova, alterado: false }); continue; }
+
+                    try {
+                        await execute("stock.quant", "create", [{ product_id: pid, location_id: locId, inventory_quantity_auto_apply: nova }], { context: ctx });
+                    } catch (e1) {
+                        const qs = await execute("stock.quant", "search_read", [[["location_id", "=", locId], ["product_id", "=", pid], ["lot_id", "=", false]]], { fields: ["id"], limit: 1 });
+                        let qid;
+                        if (qs && qs[0]) {
+                            qid = qs[0].id;
+                            await execute("stock.quant", "write", [[qid], { inventory_quantity: nova }], { context: ctx });
+                        } else {
+                            qid = await execute("stock.quant", "create", [{ product_id: pid, location_id: locId, inventory_quantity: nova }], { context: ctx });
+                        }
+                        await execute("stock.quant", "action_apply_inventory", [[qid]], { context: ctx });
+                    }
+
+                    const qsDepois = await execute("stock.quant", "search_read", [[["location_id", "=", locId], ["product_id", "=", pid]]], { fields: ["quantity"] });
+                    const depois = (qsDepois || []).reduce((t, q) => t + q.quantity, 0);
+                    if (Math.abs(depois - nova) >= 0.0005) {
+                        erros.push(nome + " ficou com " + depois + " em vez de " + nova + ". Confira no Odoo.");
+                    }
+                    resultados.push({ product_id: pid, anterior: antes, nova: depois, alterado: true });
+                } catch (e) {
+                    erros.push("Não foi possível ajustar " + nome + ": " + e.message);
+                }
+            }
+            return res.status(200).json({ success: erros.length === 0, results: resultados, errors: erros });
+        }
+
         // AÇÃO: BUSCAR PEDIDOS DE VENDAS
         if (action === "get_sales") {
             const query = body.query || "";
