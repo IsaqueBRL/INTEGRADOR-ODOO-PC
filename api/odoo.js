@@ -2270,6 +2270,9 @@ export default async function handler(req, res) {
         // ===== AJUSTE DE ESTOQUE DOS SUPRIMENTOS (sem escolher local) =====
         // Só entram produtos com "Compras" marcado + tipo Mercadorias.
         // O local é descoberto sozinho: onde o suprimento já tem estoque; se não tiver, o estoque principal do armazém.
+        // Suprimento = Compras marcado + Mercadorias + categoria MATÉRIA PRIMA (mesma regra da lista de Suprimentos)
+        const dominioSuprimentoProduto = () => [["purchase_ok", "=", true], ["type", "in", ["consu", "product"]], "|", ["categ_id.complete_name", "ilike", "MATÉRIA PRIMA"], ["categ_id.complete_name", "ilike", "MATERIA PRIMA"]];
+
         const locaisInternosDosSuprimentos = async (ids) => {
             const quants = await execute("stock.quant", "search_read", [[["product_id", "in", ids], ["location_id.usage", "=", "internal"]]], { fields: ["product_id", "location_id", "quantity"] });
             const porProduto = {};
@@ -2284,7 +2287,7 @@ export default async function handler(req, res) {
 
         if (action === "search_supply_products") {
             const query = (body.query || "").trim();
-            const domain = [["purchase_ok", "=", true], ["type", "in", ["consu", "product"]]];
+            const domain = dominioSuprimentoProduto();
             if (query) domain.push(["name", "ilike", query]);
             const produtos = await execute("product.product", "search_read", [domain], { fields: ["id", "display_name", "uom_id"], limit: 20 });
             return res.status(200).json({ result: produtos || [] });
@@ -2306,7 +2309,7 @@ export default async function handler(req, res) {
 
             const ids = itens.map(i => Number(i.product_id));
             // garante que só suprimentos (Compras + Mercadorias) sejam ajustados por esta ação
-            const validos = await execute("product.product", "search_read", [[["id", "in", ids], ["purchase_ok", "=", true], ["type", "in", ["consu", "product"]]]], { fields: ["id", "display_name"] });
+            const validos = await execute("product.product", "search_read", [[["id", "in", ids], ...dominioSuprimentoProduto()]], { fields: ["id", "display_name"] });
             const nomes = {};
             (validos || []).forEach(p => { nomes[p.id] = p.display_name; });
 
@@ -2328,7 +2331,7 @@ export default async function handler(req, res) {
                 const nova = Number(it.quantity);
                 const nome = nomes[pid] || ("produto " + pid);
                 try {
-                    if (!nomes[pid]) { erros.push(nome + ": não é um suprimento (Compras + Mercadorias)."); continue; }
+                    if (!nomes[pid]) { erros.push(nome + ": não é um suprimento (Compras + Mercadorias + categoria MATÉRIA PRIMA)."); continue; }
 
                     const locais = porProduto[pid] || {};
                     const idsLocais = Object.keys(locais).map(Number);
