@@ -466,6 +466,9 @@
             from { transform: scale(.92); opacity: 0; }
             to   { transform: scale(1); opacity: 1; }
         }
+        /* coluna Quantidade do Estoque com letras um pouco maiores */
+        th.th-qtd { font-size: 14px; }
+        td.td-qtd .stock-badge { font-size: 14.5px; font-weight: 700; padding: 3px 9px; }
         @keyframes aparecer { from { opacity: 0; } to { opacity: 1; } }
         @media (prefers-reduced-motion: reduce) {
             .view-section, .home-screen, .modal, .modal-overlay { animation: none; }
@@ -774,12 +777,13 @@
             <table>
                 <thead>
                     <tr>
-                        <th>LOCAL</th>
+                        <th>ESTOQUE</th>
                         <th>PRODUTO</th>
                         <th>CATEGORIA</th>
-                        <th>PREÇO DE CUSTO</th>
-                        <th>PREÇO DE VENDA</th>
-                        <th>QUANTIDADE</th>
+                        <th>CUSTO</th>
+                        <th>VENDA</th>
+                        <th>MARKUP</th>
+                        <th class="th-qtd">QUANTIDADE</th>
                     </tr>
                 </thead>
                 <tbody id="resultsEstoque"></tbody>
@@ -1633,7 +1637,7 @@
         if (!texto) return NaN;
         // tira moeda, unidades (un, un/dia, dias) e %, e aceita sinal negativo (margens negativas ordenavam como positivas)
         let t = String(texto).replace(/\u00a0/g, ' ').replace(/R\$/g, '').trim()
-            .replace(/\s*(un\/dia|un\.?|dias|dia|%)\s*$/i, '').replace(/\s+/g, '').replace(/^[\u2212\u2013]/, '-');
+            .replace(/\s*(un\/dia|un\.?|dias|dia|%|x)\s*$/i, '').replace(/\s+/g, '').replace(/^[\u2212\u2013]/, '-');
         // formato brasileiro: com vírgula, os pontos são separador de milhar ("1.234,56")
         if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.');
         return /^[-+]?\d+(\.\d+)?$/.test(t) ? parseFloat(t) : NaN;
@@ -3230,7 +3234,7 @@
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhum registro de estoque encontrado.";
-                results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: #888;">Nenhum registro de estoque encontrado</td></tr>`;
+                results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #888;">Nenhum registro de estoque encontrado</td></tr>`;
                 return;
             }
 
@@ -3243,6 +3247,10 @@
                 const qty = item.quantity ?? 0;
                 const categoria = Array.isArray(item.categ_id) ? item.categ_id[1] : "-";
                 const moeda = v => (v === null || v === undefined) ? "-" : "R$ " + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                // markup = preço de venda ÷ custo (sem custo ou sem venda: "-")
+                const markup = (Number(item.standard_price) > 0 && item.lst_price !== null && item.lst_price !== undefined)
+                    ? (Number(item.lst_price) / Number(item.standard_price)).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "x"
+                    : "-";
 
                 html += `
                     <tr>
@@ -3251,7 +3259,8 @@
                         <td>${escHtml(categoria)}</td>
                         <td>${moeda(item.standard_price)}</td>
                         <td>${moeda(item.lst_price)}</td>
-                        <td><span class="stock-badge stock-in">${qty} un</span></td>
+                        <td>${markup}</td>
+                        <td class="td-qtd"><span class="stock-badge stock-in">${qty} un</span></td>
                     </tr>
                 `;
             });
@@ -3259,7 +3268,7 @@
         } catch (e) {
             if (reqId !== estoqueReqId) return;
             status.innerText = "Erro ao carregar estoque.";
-            results.innerHTML = `<tr><td colspan="6" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
+            results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: red;">Erro ao carregar dados</td></tr>`;
         }
     }
 

@@ -3,7 +3,7 @@
 // Guarda só o "shell" (HTML, manifest e ícones). Os dados (produtos, estoque, vendas, financeiro)
 // vêm sempre da API /api/odoo em tempo real, então o app precisa de internet para funcionar de verdade.
 
-const CACHE_NAME = "deuris-pc-v4";
+const CACHE_NAME = "deuris-pc-v5";
 const SHELL = ["/", "/index.html", "/manifest.json", "/icon-192.png", "/icon-512.png", "/icon-maskable-512.png", "/favicon.ico", "/favicon-32.png"];
 
 self.addEventListener("install", (event) => {
