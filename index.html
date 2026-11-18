@@ -3249,7 +3249,7 @@
                 const moeda = v => (v === null || v === undefined) ? "-" : "R$ " + Number(v).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
                 // markup = preço de venda ÷ custo (sem custo ou sem venda: "-")
                 const markup = (Number(item.standard_price) > 0 && item.lst_price !== null && item.lst_price !== undefined)
-                    ? (Number(item.lst_price) / Number(item.standard_price)).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "x"
+                    ? (Number(item.lst_price) / Number(item.standard_price)).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
                     : "-";
 
                 html += `
