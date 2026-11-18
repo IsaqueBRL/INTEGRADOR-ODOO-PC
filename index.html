@@ -466,6 +466,13 @@
             from { transform: scale(.92); opacity: 0; }
             to   { transform: scale(1); opacity: 1; }
         }
+        /* coluna Validade dos Suprimentos */
+        td.val-cel { font-weight: 600; white-space: nowrap; }
+        .val-rotulo { display: block; font-size: 11px; font-weight: 500; opacity: .85; margin-top: 1px; }
+        td.val-ok { color: #2e7d32; box-shadow: inset 4px 0 0 #81c784; }
+        td.val-vencida { background: #c62828; color: #fff; box-shadow: inset 4px 0 0 #7f0000; animation: validadePulsa 1.4s ease-in-out infinite; }
+        @keyframes validadePulsa { 0%, 100% { background: #c62828; } 50% { background: #e53935; } }
+        @media (prefers-reduced-motion: reduce) { td.val-vencida { animation: none; } }
         /* coluna Quantidade do Estoque com letras um pouco maiores */
         th.th-qtd { font-size: 14px; }
         td.td-qtd .stock-badge { font-size: 14.5px; font-weight: 700; padding: 3px 9px; }
@@ -2806,7 +2813,7 @@
                     <tr data-id="${prod.id}">
                         <td><strong>${escHtml(prod.name || '-')}</strong></td>
                         <td data-sort="${dataParaOrdenar(prod.last_entry_date)}">${formatarSoData(prod.last_entry_date)}</td>
-                        <td data-sort="${prod.expiry_date || ''}">${formatarValidade(prod.expiry_date)}</td>
+                        ${celulaValidade(prod.expiry_date)}
                         <td>${escHtml(prod.barcode || '-')}</td>
                         <td class="cost-col">${moedaCusto(prod.standard_price)}</td>
                         <td><span class="stock-badge ${qtyClass}">${Number(qty).toLocaleString('pt-BR', { maximumFractionDigits: 3 })}</span></td>
@@ -5526,6 +5533,38 @@
     }
 
     // Valor ISO (UTC) para ordenar a coluna de data; vazio quando não há data
+    // Célula de Validade: de longe fica neutra; nos últimos 30 dias vai esquentando do amarelo ao vermelho
+    // (cor calculada dia a dia); vencida ou vencendo hoje fica vermelho forte e pulsando.
+    const VALIDADE_AVISO_DIAS = 30;
+    function celulaValidade(valor) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(valor || ''));
+        if (!m) return `<td data-sort="">-</td>`;
+        const hoje = new Date(); hoje.setHours(0, 0, 0, 0);
+        const alvo = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+        const dias = Math.round((alvo - hoje) / 86400000);
+        const texto = formatarValidade(valor);
+        let rotulo, estilo = '', cls = 'val-cel';
+        if (dias < 0) {
+            rotulo = dias === -1 ? 'venceu ontem' : `venceu há ${-dias} dias`;
+            cls += ' val-vencida';
+        } else if (dias === 0) {
+            rotulo = 'vence hoje';
+            cls += ' val-vencida';
+        } else {
+            rotulo = dias === 1 ? 'vence amanhã' : `faltam ${dias} dias`;
+            if (dias <= VALIDADE_AVISO_DIAS) {
+                const t = 1 - dias / VALIDADE_AVISO_DIAS;          // 0 = começou a avisar, 1 = quase vencendo
+                const matiz = Math.round(52 - 52 * t);              // 52 (amarelo) → 0 (vermelho)
+                const luz = Math.round(90 - 22 * t);                // fundo vai ficando mais intenso
+                estilo = `background: hsl(${matiz}, 95%, ${luz}%); color: hsl(${matiz}, 90%, ${Math.max(18, 30 - Math.round(10 * t))}%); box-shadow: inset 4px 0 0 hsl(${matiz}, 90%, 48%);`;
+                cls += ' val-aviso';
+            } else {
+                cls += ' val-ok';
+            }
+        }
+        return `<td class="${cls}" data-sort="${valor}" style="${estilo}" title="${rotulo}">${texto}<small class="val-rotulo">${rotulo}</small></td>`;
+    }
+
     // Validade vem só com a data (AAAA-MM-DD): formata direto, sem converter fuso
     function formatarValidade(valor) {
         const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(valor || ''));
