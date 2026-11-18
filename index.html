@@ -586,6 +586,7 @@
                     <tr>
                         <th>PRODUTO</th>
                         <th>ÚLTIMA ENTRADA</th>
+                        <th>VALIDADE</th>
                         <th>CÓDIGO DE BARRAS</th>
                         <th>CUSTO</th>
                         <th>ESTOQUE</th>
@@ -2788,7 +2789,7 @@
 
             if (!data.result || data.result.length === 0) {
                 status.innerText = "Nenhum suprimento encontrado.";
-                results.innerHTML = `<tr><td colspan="7" style="text-align: center; color: #888;">Nenhum suprimento encontrado</td></tr>`;
+                results.innerHTML = `<tr><td colspan="8" style="text-align: center; color: #888;">Nenhum suprimento encontrado</td></tr>`;
                 return;
             }
 
@@ -2805,6 +2806,7 @@
                     <tr data-id="${prod.id}">
                         <td><strong>${escHtml(prod.name || '-')}</strong></td>
                         <td data-sort="${dataParaOrdenar(prod.last_entry_date)}">${formatarSoData(prod.last_entry_date)}</td>
+                        <td data-sort="${prod.expiry_date || ''}">${formatarValidade(prod.expiry_date)}</td>
                         <td>${escHtml(prod.barcode || '-')}</td>
                         <td class="cost-col">${moedaCusto(prod.standard_price)}</td>
                         <td><span class="stock-badge ${qtyClass}">${Number(qty).toLocaleString('pt-BR', { maximumFractionDigits: 3 })}</span></td>
@@ -5524,6 +5526,12 @@
     }
 
     // Valor ISO (UTC) para ordenar a coluna de data; vazio quando não há data
+    // Validade vem só com a data (AAAA-MM-DD): formata direto, sem converter fuso
+    function formatarValidade(valor) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(valor || ''));
+        return m ? `${m[3]}/${m[2]}/${m[1]}` : '-';
+    }
+
     function dataParaOrdenar(valor) {
         return valor ? String(valor).replace(' ', 'T') + 'Z' : '';
     }

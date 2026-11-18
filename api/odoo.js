@@ -2885,10 +2885,30 @@ export default async function handler(req, res) {
             if (query) domain.push(["name", "ilike", query]);
             if (body.barcode) domain.push(["barcode", "ilike", String(body.barcode)]);
             if (Number(body.uom_id)) domain.push(["uom_id", "=", Number(body.uom_id)]);
-            const result = await execute("product.template", "search_read", [domain], {
-                fields: ["id", "name", "barcode", "standard_price", "qty_available", "uom_id"],
-                order: "name asc",
-                limit: 500
+            // "product_properties" guarda as propriedades criadas na categoria (aqui: "Validade"); se o campo não existir, segue sem ele
+            let result;
+            try {
+                result = await execute("product.template", "search_read", [domain], {
+                    fields: ["id", "name", "barcode", "standard_price", "qty_available", "uom_id", "product_properties"],
+                    order: "name asc",
+                    limit: 500
+                });
+            } catch (e) {
+                console.warn("Propriedades do produto indisponíveis, listando sem Validade:", e.message);
+                result = await execute("product.template", "search_read", [domain], {
+                    fields: ["id", "name", "barcode", "standard_price", "qty_available", "uom_id"],
+                    order: "name asc",
+                    limit: 500
+                });
+            }
+            // acha a propriedade "Validade" (data) de cada produto: vem como "AAAA-MM-DD" ou vazio
+            const semAcento = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+            (result || []).forEach(r => {
+                const props = Array.isArray(r.product_properties) ? r.product_properties : [];
+                const p = props.find(x => x && (semAcento(x.string) === "validade" || semAcento(x.name) === "validade"));
+                let v = p ? p.value : false;
+                r.expiry_date = (typeof v === "string" && v) ? v.slice(0, 10) : false;
+                delete r.product_properties;
             });
 
             // Data da ÚLTIMA ENTRADA de cada suprimento: mesma regra do "Histórico de movimentações" do Odoo
