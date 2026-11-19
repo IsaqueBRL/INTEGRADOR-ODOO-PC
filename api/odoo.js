@@ -1385,6 +1385,19 @@ export default async function handler(req, res) {
             if (standard_price !== undefined) writeData.standard_price = Number(standard_price);
             if (categ_id) writeData.categ_id = Number(categ_id);
 
+            // Validade (propriedade do produto): só mexe quando o campo vem na chamada; "" limpa a data
+            if (body.expiry_date !== undefined) {
+                const dataValidade = String(body.expiry_date || "").trim();
+                if (dataValidade && !/^\d{4}-\d{2}-\d{2}$/.test(dataValidade)) return res.status(400).json({ error: "Data de validade inválida." });
+                const semAcento = t => String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+                const [tmpl] = await execute("product.template", "read", [[Number(product_id)], ["product_properties"]]);
+                const props = Array.isArray(tmpl && tmpl.product_properties) ? tmpl.product_properties : [];
+                const idx = props.findIndex(x => x && (semAcento(x.string) === "validade" || semAcento(x.name) === "validade"));
+                if (idx < 0) return res.status(400).json({ error: "Este produto não tem a propriedade \"Validade\" (confira a categoria dele no Odoo)." });
+                props[idx].value = dataValidade || false;
+                writeData.product_properties = props;
+            }
+
             await execute("product.template", "write", [[Number(product_id)], writeData]);
             _cache.delete("sale_products");
             _cache.delete("transfer_products");
