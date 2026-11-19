@@ -2953,7 +2953,10 @@
         delete filtrosAplicados['estoqueCategoriaFilter'];
         carregarLocaisEstoque();
         carregarCategoriasEstoque();
-        pesquisar('estoque', buscarEstoque); // "Todos os locais" já selecionado: mostra o estoque de todos os locais
+        // abre a tela vazia: os dados só aparecem quando o usuário clica em Pesquisar ou aperta Enter
+        ++estoqueReqId; // descarta qualquer busca anterior ainda em andamento
+        document.getElementById('statusEstoque').innerText = "Use os filtros e clique em Pesquisar (ou aperte Enter). Sem nenhum filtro, mostra o estoque de todos os locais.";
+        document.getElementById('resultsEstoque').innerHTML = "";
     }
 
     /* AJUSTE DE ESTOQUE */
